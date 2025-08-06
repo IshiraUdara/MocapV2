@@ -1,16 +1,13 @@
 import socket
 import numpy as np
 import cv2
-import os
 
-# Cleanup previous socket file (if any)
-SOCKET_PATH = "/tmp/unity_python.sock"
-if os.path.exists(SOCKET_PATH):
-    os.remove(SOCKET_PATH)
+# Define the server host
+SERVER_HOST = "localhost"  # or "127.0.0.1"
 
-# Create UDS server
-server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-server.bind(SOCKET_PATH)
+# Create TCP server
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.bind((SERVER_HOST, 12345))
 server.listen(1)
 
 print("Waiting for Unity to connect...")
@@ -43,5 +40,4 @@ try:
 finally:
     connection.close()
     server.close()
-    os.remove(SOCKET_PATH)
     cv2.destroyAllWindows()
