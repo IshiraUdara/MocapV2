@@ -7,7 +7,7 @@ import serial.tools.list_ports
 accepted_pids = [60000]
 accepted_vids = [4292]
 verified_devices = []
-HOST = "127.0.0.1"
+HOST = "localhost"
 PORT = 5000
 server = None
 connection = None

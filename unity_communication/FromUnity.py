@@ -7,7 +7,7 @@ SERVER_HOST = "localhost"  # or "127.0.0.1"
 
 # Create TCP server
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.bind((SERVER_HOST, 12345))
+server.bind((SERVER_HOST, 5000))
 server.listen(1)
 
 print("Waiting for Unity to connect...")
