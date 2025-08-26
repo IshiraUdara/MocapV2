@@ -13,7 +13,7 @@ cameras = [
     {"name": "UnityCam2", "width": 256, "height": 256, "channels": 4},
 ]
 
-OUT_DIR = "texture_import_from_unity"
+OUT_DIR = "Unity_Simulation/texture_import_from_unity"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # Global control variables (matching TakePhotos pattern)
