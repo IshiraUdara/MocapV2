@@ -228,22 +228,50 @@ def display_thread():
                 
                 print(f"\r║ Filtered Orientation (R/P/Y): [{euler[0]:6.1f}°, {euler[1]:6.1f}°, {euler[2]:6.1f}°] "
                       f"║ Filtered Accel: [{filtered_accel[0]:6.2f}, {filtered_accel[1]:6.2f}, {filtered_accel[2]:6.2f}] "
-                      f"║ Raw Accel: [{raw_accel[0]:6.2f}, {raw_accel[1]:6.2f}, {raw_accel[2]:6.2f}] ║", end="")
+                      f"║ Filtered Gyro: [{filtered_gyro[0]:6.2f}, {filtered_gyro[1]:6.2f}, {filtered_gyro[2]:6.2f}] ║", end="")
                 
             time.sleep(0.1)  # Display update rate
             
         except Exception as e:
             print(f"Error in display thread: {e}")
 
+def udp_send_thread():
+    """Thread to send UDP data to Unity (if needed)"""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    target_ip = "127.0.0.1"
+    target_port = 5001
+
+    while True:
+        try:
+            filtered_data = None
+            try:
+                # Get latest filtered data
+                while not filtered_queue.empty():
+                    filtered_data = filtered_queue.get_nowait()
+            except queue.Empty:
+                pass
+
+            if filtered_data is not None:
+                # Send filtered data over UDP
+                sock.sendto(json.dumps(filtered_data).encode(), (target_ip, target_port))
+
+            time.sleep(0.1)  # UDP send rate
+
+        except Exception as e:
+            print(f"Error in UDP send thread: {e}")
+
+
 if __name__ == "__main__":
     # Start threads
     receiver_thread = threading.Thread(target=udp_receiver_thread, daemon=True)
     filtering_thread = threading.Thread(target=filter_thread, daemon=True)
     display_thread_obj = threading.Thread(target=display_thread, daemon=True)
+    udp_send_thread_obj = threading.Thread(target=udp_send_thread, daemon=True)
     
     receiver_thread.start()
     filtering_thread.start()
     display_thread_obj.start()
+    udp_send_thread_obj.start()
     
     print("IMU filtering started. Press Ctrl+C to exit.")
     print("=" * 120)
