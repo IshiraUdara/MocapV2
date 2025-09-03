@@ -11,8 +11,14 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'IMU_EKF'))
 
 # Import your custom EKF modules
-from EKF import ExtendedKalmanFilter
-from MathLib import *
+try:
+    from EKF import ExtendedKalmanFilter
+    from MathLib import *
+    print("Successfully imported EKF modules")
+except ImportError as e:
+    print(f"Error importing EKF modules: {e}")
+    sys.exit(1)
+
 import math
 
 UDP_IP = "127.0.0.1"
@@ -39,11 +45,11 @@ def udp_receiver_thread():
             gyro = imu_data['gyro']    # [wx, wy, wz]
             orientation = imu_data['orientation']  # Unity quaternion [x, y, z, w]
             
-            # Create measurement dictionary
+            # Create measurement dictionary matching your EKF format
             measurement = {
-                'accel': np.array(accel),
-                'gyro': np.array(gyro),
-                'mag': np.array([0, 0, 0]),  # Unity doesn't provide magnetometer
+                'accel': np.array(accel, dtype=np.float64),
+                'gyro': np.array(gyro, dtype=np.float64),
+                'mag': np.array([0, 0, 0], dtype=np.float64),  # Unity doesn't provide magnetometer
                 'timestamp': time.time()
             }
             
@@ -58,62 +64,54 @@ def udp_receiver_thread():
         except Exception as e:
             print(f"Error receiving data: {e}")
 
-def simple_madgwick_filter(accel, gyro, dt, beta=0.1):
-    """Simple Madgwick-style AHRS filter for quaternion estimation"""
-    # Static variables to maintain state between calls
-    if not hasattr(simple_madgwick_filter, "q"):
-        simple_madgwick_filter.q = np.array([1.0, 0.0, 0.0, 0.0])  # w, x, y, z
+def ekf_filter_thread():
+    """Thread to process IMU data through your custom EKF"""
+    print("EKF filter thread started...")
     
-    q = simple_madgwick_filter.q
-    
-    # Normalize accelerometer measurement
-    if np.linalg.norm(accel) == 0:
-        return q
-    
-    accel = accel / np.linalg.norm(accel)
-    
-    # Gradient decent algorithm corrective step
-    f = np.array([
-        2*(q[1]*q[3] - q[0]*q[2]) - accel[0],
-        2*(q[0]*q[1] + q[2]*q[3]) - accel[1],
-        2*(0.5 - q[1]**2 - q[2]**2) - accel[2]
-    ])
-    
-    J = np.array([
-        [-2*q[2], 2*q[3], -2*q[0], 2*q[1]],
-        [2*q[1], 2*q[0], 2*q[3], 2*q[2]],
-        [0, -4*q[1], -4*q[2], 0]
-    ])
-    
-    step = J.T @ f
-    step = step / np.linalg.norm(step)  # normalize step magnitude
-    
-    # Compute rate of change of quaternion
-    qDot = 0.5 * quaternion_multiply(q, np.array([0, gyro[0], gyro[1], gyro[2]])) - beta * step
-    
-    # Integrate to yield quaternion
-    q = q + qDot * dt
-    simple_madgwick_filter.q = q / np.linalg.norm(q)  # normalize quaternion
-    
-    return simple_madgwick_filter.q
-
-def quaternion_multiply(q1, q2):
-    """Multiply two quaternions"""
-    w1, x1, y1, z1 = q1
-    w2, x2, y2, z2 = q2
-    
-    return np.array([
-        w1*w2 - x1*x2 - y1*y2 - z1*z2,
-        w1*x2 + x1*w2 + y1*z2 - z1*y2,
-        w1*y2 - x1*z2 + y1*w2 + z1*x2,
-        w1*z2 + x1*y2 - y1*x2 + z1*w2
-    ])
-
-def filter_thread():
-    """Thread to process IMU data through a simple filter"""
-    print("Filter thread started...")
+    # Initialize your custom EKF with proper dimensions
+    try:
+        # Based on typical IMU EKF: 16 states, 6 measurements
+        # State: [q0, q1, q2, q3, x, y, z, vx, vy, vz, bwx, bwy, bwz, bax, bay, baz]
+        # Measurements: [ax, ay, az, gx, gy, gz] (accel + gyro)
+        ekf = ExtendedKalmanFilter(dim_x=16, dim_u=6)
+        
+        # Initialize state vector
+        ekf.x = np.zeros(16)
+        ekf.x[0] = 1.0  # Initialize quaternion w component
+        
+        # Initialize covariance matrix
+        ekf.P = np.eye(16)
+        ekf.P[0:4, 0:4] *= 0.1    # Quaternion uncertainty
+        ekf.P[4:7, 4:7] *= 1.0    # Position uncertainty
+        ekf.P[7:10, 7:10] *= 0.1  # Velocity uncertainty
+        ekf.P[10:13, 10:13] *= 0.01  # Gyro bias uncertainty
+        ekf.P[13:16, 13:16] *= 0.01  # Accel bias uncertainty
+        
+        # Process noise covariance
+        ekf.Q = np.eye(16) * 0.001
+        ekf.Q[0:4, 0:4] *= 0.0001  # Low process noise for quaternion
+        ekf.Q[4:7, 4:7] *= 0.01    # Position process noise
+        ekf.Q[7:10, 7:10] *= 0.01  # Velocity process noise
+        ekf.Q[10:16, 10:16] *= 0.00001  # Very low bias process noise
+        
+        # Measurement noise covariance
+        ekf.R = np.eye(6)
+        ekf.R[0:3, 0:3] *= 0.1   # Accelerometer noise
+        ekf.R[3:6, 3:6] *= 0.05  # Gyroscope noise
+        
+        print("Available EKF methods:", [method for method in dir(ekf) if not method.startswith('_')])
+        print("EKF initialized successfully")
+        print(f"State dimension: {ekf.x.shape}")
+        print(f"P matrix shape: {ekf.P.shape}")
+        print(f"Q matrix shape: {ekf.Q.shape}")
+        print(f"R matrix shape: {ekf.R.shape}")
+        
+    except Exception as e:
+        print(f"Error initializing EKF: {e}")
+        return
     
     prev_time = None
+    iteration_count = 0
     
     while True:
         try:
@@ -131,59 +129,112 @@ def filter_thread():
                 
                 if prev_time is not None:
                     dt = current_time - prev_time
+                    iteration_count += 1
                     
-                    # Apply simple complementary filter for orientation
+                    # Prepare measurement data
                     accel = measurement['accel']
                     gyro = measurement['gyro']
                     
-                    # Use Madgwick filter for orientation estimation
-                    filtered_quaternion = simple_madgwick_filter(accel, gyro, dt)
-                    
-                    # Simple low-pass filter for acceleration
-                    alpha = 0.8  # Filter coefficient
-                    if not hasattr(filter_thread, "filtered_accel"):
-                        filter_thread.filtered_accel = accel.copy()
-                    
-                    filter_thread.filtered_accel = alpha * filter_thread.filtered_accel + (1 - alpha) * accel
-                    
-                    # Simple low-pass filter for gyroscope
-                    if not hasattr(filter_thread, "filtered_gyro"):
-                        filter_thread.filtered_gyro = gyro.copy()
-                    
-                    filter_thread.filtered_gyro = alpha * filter_thread.filtered_gyro + (1 - alpha) * gyro
-                    
-                    # Convert to Euler angles for easier interpretation
-                    euler = quaternion_to_euler(filtered_quaternion)
-                    
-                    # Create filtered data structure
-                    filtered_data = {
-                        'quaternion': filtered_quaternion.tolist(),
-                        'euler': euler,
-                        'filtered_accel': filter_thread.filtered_accel.tolist(),
-                        'filtered_gyro': filter_thread.filtered_gyro.tolist(),
-                        'raw_accel': accel.tolist(),
-                        'raw_gyro': gyro.tolist(),
-                        'timestamp': current_time
-                    }
-                    
-                    # Add to filtered queue
                     try:
-                        if filtered_queue.full():
-                            filtered_queue.get_nowait()
-                        filtered_queue.put_nowait(filtered_data)
-                    except queue.Empty:
-                        pass
+                        # Create measurement vector [ax, ay, az, gx, gy, gz]
+                        z = np.concatenate([accel, gyro])
+                        
+                        # Predict step
+                        if hasattr(ekf, 'predict'):
+                            try:
+                                ekf.predict(dt=dt)
+                            except TypeError:
+                                try:
+                                    ekf.predict(dt)
+                                except:
+                                    ekf.predict()
+                        
+                        # Update step
+                        if hasattr(ekf, 'update'):
+                            try:
+                                ekf.update(z)
+                            except Exception as update_error:
+                                print(f"Update error: {update_error}")
+                        
+                        # Get filtered quaternion from state
+                        filtered_quaternion = ekf.x[0:4].copy()
+                        
+                        # Normalize quaternion
+                        norm = np.linalg.norm(filtered_quaternion)
+                        if norm > 0:
+                            filtered_quaternion = filtered_quaternion / norm
+                        
+                        # Get other state components
+                        position = ekf.x[4:7].copy()
+                        velocity = ekf.x[7:10].copy()
+                        gyro_bias = ekf.x[10:13].copy()
+                        accel_bias = ekf.x[13:16].copy()
+                        
+                        # Convert quaternion to Euler angles
+                        euler = quaternion_to_euler(filtered_quaternion)
+                        
+                        # Create filtered data structure
+                        filtered_data = {
+                            'quaternion': filtered_quaternion.tolist(),
+                            'euler': euler,
+                            'position': position.tolist(),
+                            'velocity': velocity.tolist(),
+                            'gyro_bias': gyro_bias.tolist(),
+                            'accel_bias': accel_bias.tolist(),
+                            'raw_accel': accel.tolist(),
+                            'raw_gyro': gyro.tolist(),
+                            'timestamp': current_time,
+                            'filter_type': 'EKF',
+                            'iteration': iteration_count
+                        }
+                        
+                        # Add to filtered queue
+                        try:
+                            if filtered_queue.full():
+                                filtered_queue.get_nowait()
+                            filtered_queue.put_nowait(filtered_data)
+                        except queue.Empty:
+                            pass
+                        
+                    except Exception as e:
+                        print(f"\nError in EKF processing (iteration {iteration_count}): {e}")
+                        # Continue with raw data when EKF fails
+                        raw_data = {
+                            'quaternion': [1, 0, 0, 0],
+                            'euler': [0, 0, 0],
+                            'position': [0, 0, 0],
+                            'velocity': [0, 0, 0],
+                            'gyro_bias': [0, 0, 0],
+                            'accel_bias': [0, 0, 0],
+                            'raw_accel': accel.tolist(),
+                            'raw_gyro': gyro.tolist(),
+                            'timestamp': current_time,
+                            'filter_type': 'RAW-Error',
+                            'iteration': iteration_count,
+                            'error': str(e)
+                        }
+                        
+                        try:
+                            if filtered_queue.full():
+                                filtered_queue.get_nowait()
+                            filtered_queue.put_nowait(raw_data)
+                        except queue.Empty:
+                            pass
                 
                 prev_time = current_time
             
             time.sleep(0.001)  # Small sleep to prevent CPU hogging
             
         except Exception as e:
-            print(f"Error in filter thread: {e}")
+            print(f"Error in EKF filter thread: {e}")
 
 def quaternion_to_euler(q):
     """Convert quaternion to Euler angles (roll, pitch, yaw) in degrees"""
-    w, x, y, z = q
+    if len(q) != 4:
+        return [0, 0, 0]
+    
+    # Handle [w,x,y,z] format
+    w, x, y, z = q[0], q[1], q[2], q[3]
     
     # Roll (x-axis rotation)
     sinr_cosp = 2 * (w * x + y * z)
@@ -219,62 +270,36 @@ def display_thread():
                 pass
             
             if filtered_data is not None:
-                quat = filtered_data['quaternion']
-                euler = filtered_data['euler']
-                filtered_accel = filtered_data['filtered_accel']
-                filtered_gyro = filtered_data['filtered_gyro']
-                raw_accel = filtered_data['raw_accel']
-                raw_gyro = filtered_data['raw_gyro']
+                filter_type = filtered_data.get('filter_type', 'Unknown')
+                euler = filtered_data.get('euler', [0, 0, 0])
+                position = filtered_data.get('position', [0, 0, 0])
+                gyro_bias = filtered_data.get('gyro_bias', [0, 0, 0])
+                accel_bias = filtered_data.get('accel_bias', [0, 0, 0])
+                raw_accel = filtered_data.get('raw_accel', [0, 0, 0])
+                raw_gyro = filtered_data.get('raw_gyro', [0, 0, 0])
+                iteration = filtered_data.get('iteration', 0)
                 
-                print(f"\r║ Filtered Orientation (R/P/Y): [{euler[0]:6.1f}°, {euler[1]:6.1f}°, {euler[2]:6.1f}°] "
-                      f"║ Filtered Accel: [{filtered_accel[0]:6.2f}, {filtered_accel[1]:6.2f}, {filtered_accel[2]:6.2f}] "
-                      f"║ Filtered Gyro: [{filtered_gyro[0]:6.2f}, {filtered_gyro[1]:6.2f}, {filtered_gyro[2]:6.2f}] ║", end="")
+                print(f"\r[{iteration:4d}] ║ {filter_type:10s} ║ Orientation (R/P/Y): [{euler[0]:6.1f}°, {euler[1]:6.1f}°, {euler[2]:6.1f}°] "
+                      f"║ Position: [{position[0]:6.2f}, {position[1]:6.2f}, {position[2]:6.2f}] "
+                      f"║ Gyro Bias: [{gyro_bias[0]:6.3f}, {gyro_bias[1]:6.3f}, {gyro_bias[2]:6.3f}] ║", end="")
                 
-            time.sleep(0.1)  # Display update rate
+            time.sleep(0.05)  # Display update rate
             
         except Exception as e:
             print(f"Error in display thread: {e}")
 
-def udp_send_thread():
-    """Thread to send UDP data to Unity (if needed)"""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    target_ip = "127.0.0.1"
-    target_port = 5001
-
-    while True:
-        try:
-            filtered_data = None
-            try:
-                # Get latest filtered data
-                while not filtered_queue.empty():
-                    filtered_data = filtered_queue.get_nowait()
-            except queue.Empty:
-                pass
-
-            if filtered_data is not None:
-                # Send filtered data over UDP
-                sock.sendto(json.dumps(filtered_data).encode(), (target_ip, target_port))
-
-            time.sleep(0.1)  # UDP send rate
-
-        except Exception as e:
-            print(f"Error in UDP send thread: {e}")
-
-
 if __name__ == "__main__":
-    # Start threads
+    # Start threads - using EKF instead of simple filtering
     receiver_thread = threading.Thread(target=udp_receiver_thread, daemon=True)
-    filtering_thread = threading.Thread(target=filter_thread, daemon=True)
+    ekf_thread = threading.Thread(target=ekf_filter_thread, daemon=True)
     display_thread_obj = threading.Thread(target=display_thread, daemon=True)
-    udp_send_thread_obj = threading.Thread(target=udp_send_thread, daemon=True)
     
     receiver_thread.start()
-    filtering_thread.start()
+    ekf_thread.start()
     display_thread_obj.start()
-    udp_send_thread_obj.start()
     
-    print("IMU filtering started. Press Ctrl+C to exit.")
-    print("=" * 120)
+    print("IMU EKF filtering started. Press Ctrl+C to exit.")
+    print("=" * 150)
     
     try:
         while True:
