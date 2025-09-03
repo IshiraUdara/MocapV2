@@ -116,11 +116,11 @@ def acquire_and_display_images(cam, cam_num, flipped=True, floor=False):
                 if take_photo.is_set():
                     print(f'Taking photo...{cam_num}')
                     if floor:
-                        os.makedirs(f'./tracking/cam{cam_num}', exist_ok=True)
-                        image_name = f'./tracking/cam{cam_num}/{int(time.time())}.png'
+                        os.makedirs(f'Unity_Simulation/tracking/cam{cam_num}', exist_ok=True)
+                        image_name = f'Unity_Simulation/tracking/cam{cam_num}/{int(time.time())}.png'
                     else:
-                        os.makedirs(f'./captured_images/cam{cam_num}', exist_ok=True)
-                        image_name = f'./captured_images/cam{cam_num}/{int(time.time())}.png'
+                        os.makedirs(f'Unity_Simulation/captured_images/cam{cam_num}', exist_ok=True)
+                        image_name = f'Unity_Simulation/captured_images/cam{cam_num}/{int(time.time())}.png'
                     cv2.imwrite(image_name, image_data)
                     take_photo.clear()
             
