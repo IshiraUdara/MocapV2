@@ -10,22 +10,15 @@ from lib.Helpers import find_point_correspondance_and_object_points, get_extrins
 import queue
 import socket
 import msgpack
-import pyk4a
-from pyk4a import PyK4A, Config
 
 running = threading.Event()
 running.set()
 camera_poses, camera_count = get_extrinsics("./jsons/after_floor_extrinsics.json")
 
+
 def track_points(kinect, data_queue: queue.Queue, preview=False):
     """
-    This function continuously acquires images from Azure Kinect DK and processes them.
-    
-    :param kinect: Azure Kinect device instance.
-    :param data_queue: Queue to store detected points.
-    :param preview: Whether to show preview window.
-    :return: True if successful, False otherwise.
-    :rtype: bool
+    Continuously acquires images from Azure Kinect DK and processes them.
     """
     global running
     try:
@@ -39,70 +32,56 @@ def track_points(kinect, data_queue: queue.Queue, preview=False):
         
         print('Starting image acquisition...')
         
-        # Frame rate calculation variables
         frame_count = 0
         start_time = time.time()
         fps = 0
-        time.sleep(1)  # Allow time for camera to stabilize
+        time.sleep(1)  # Allow camera to stabilize
         
-        # Main acquisition loop
         while running.is_set():
             try:
-                # Get capture from Kinect
                 capture = kinect.get_capture()
                 
-                if capture.color is not None:
-                    # Get color image as numpy array
-                    color_image = capture.color
-                    
-                    # Convert to OpenCV format (BGR)
-                    color_image_bgr = cv2.cvtColor(color_image, cv2.COLOR_BGRA2BGR)
-                    
-                    # Convert to grayscale for dot detection
-                    gray_image = cv2.cvtColor(color_image_bgr, cv2.COLOR_BGR2GRAY)
-                    
-                    # Find dots in the image
-                    processed_image, detected_points = _find_dot(gray_image, print_location=True)
+                if capture is not None:
+                    # Get color image using the correct method
+                    color_image = capture.get_color_image()
+                    if color_image is not None:
+                        # Convert from BGRA to BGR
+                        color_image_bgr = cv2.cvtColor(color_image, cv2.COLOR_BGRA2BGR)
+                        gray_image = cv2.cvtColor(color_image_bgr, cv2.COLOR_BGR2GRAY)
+                        
+                        processed_image, detected_points = _find_dot(gray_image, print_location=True)
 
-                    try:
-                        # Drain the queue to get the most recent data
-                        if data_queue.full():
-                            data_queue.get_nowait()
-                        data_queue.put_nowait(detected_points)
-                    except queue.Full:
-                        print("Queue is full")
-                    
-                    # Calculate and display FPS every 30 frames
-                    frame_count += 1
-                    if frame_count % 30 == 0:
-                        end_time = time.time()
-                        fps = frame_count / (end_time - start_time)
-                        frame_count = 0
-                        start_time = end_time
-                    
-                    if preview:
-                        # Add FPS text to the image
-                        cv2.putText(processed_image, f"FPS: {fps:.1f}", (10, 30), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        try:
+                            if data_queue.full():
+                                data_queue.get_nowait()
+                            data_queue.put_nowait(detected_points)
+                        except queue.Full:
+                            print("Queue is full")
                         
-                        # Display the image
-                        cv2.imshow(window_name, processed_image)
+                        frame_count += 1
+                        if frame_count % 30 == 0:
+                            end_time = time.time()
+                            fps = frame_count / (end_time - start_time)
+                            frame_count = 0
+                            start_time = end_time
                         
-                        # Process any OpenCV GUI events
-                        key = cv2.waitKey(1) & 0xFF
-                        if key == 27:  # ESC key
-                            print('ESC pressed. Exiting...')
-                            running.clear()
-                            break
-                
-                # Small delay to prevent excessive CPU usage
-                time.sleep(0.001)
-                
+                        if preview:
+                            cv2.putText(processed_image, f"FPS: {fps:.1f}", (10, 30), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                            cv2.imshow(window_name, processed_image)
+                            
+                            key = cv2.waitKey(1) & 0xFF
+                            if key == 27:  # ESC
+                                print('ESC pressed. Exiting...')
+                                running.clear()
+                                break
+                    
+                    time.sleep(0.001)
+                    
             except Exception as ex:
                 print(f'Error during capture: {ex}')
                 continue
         
-        # Clean up
         if preview:
             cv2.destroyWindow(window_name)
         print("Kinect feed stopped")
@@ -165,7 +144,7 @@ def track(data_queue1: queue.Queue, data_queue2: queue.Queue, stream=True):
                 print(f"FPS: {fps:.2f}")
                 
         except queue.Empty:
-            pass  # Continue if queue is empty
+            pass
         except Exception as ex:
             print(f"Tracking error: {ex}")
             
@@ -174,29 +153,20 @@ def track(data_queue1: queue.Queue, data_queue2: queue.Queue, stream=True):
 
 def run_single_camera(device_id, data_queue):
     """
-    Kinect initialization and execution function.
-    
-    :param device_id: Kinect device ID (0 for first device, 1 for second, etc.)
-    :param data_queue: Queue to store detected points
-    :return: True if successful, False otherwise.
-    :rtype: bool
+    Initialize and run a single Kinect device.
     """
     try:
-        # Initialize pykinect
         pykinect.initialize_libraries(track_body=False)
         
-        # Modify configuration
         device_config = pykinect.default_configuration
-        device_config.color_format = pykinect.K4A_IMAGE_FORMAT_COLOR_BGRA32
-        device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_720P
-        device_config.depth_mode = pykinect.K4A_DEPTH_MODE_WFOV_2X2BINNED
-        device_config.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_30
-        
-        # Start device
-        kinect = pykinect.start_device(device_id=device_id, config=device_config)
+        device_config.color_format = pykinect._k4a.K4A_IMAGE_FORMAT_COLOR_BGRA32
+        device_config.color_resolution = pykinect._k4a.K4A_COLOR_RESOLUTION_720P
+        device_config.depth_mode = pykinect._k4a.K4A_DEPTH_MODE_WFOV_2X2BINNED
+        device_config.camera_fps = pykinect._k4a.K4A_FRAMES_PER_SECOND_30
+
+        kinect = pykinect.start_device(config=device_config)
         print(f'Kinect {device_id} initialized successfully')
         
-        # Run tracking function
         result = track_points(kinect, data_queue, preview=True)
         
         return result
@@ -208,20 +178,18 @@ def run_single_camera(device_id, data_queue):
 
 def main():
     """
-    Main function.
+    Main entry point.
     """
     global running
     try:
-        # Initialize pykinect
         pykinect.initialize_libraries(track_body=False)
         
         print(f'MoCap v2.0 - Azure Kinect DK')
         
-        # Check for available devices
-        device_count = 0
+        # Correct device detection
+        device_count = pykinect.Device.device_get_installed_count()
         print(f'Number of Kinect devices detected: {device_count}')
         
-        # Check if devices are available
         if device_count == 0:
             print('No Kinect devices detected!')
             input('Press Enter to exit...')
@@ -235,12 +203,10 @@ def main():
         data_queue1 = queue.Queue(maxsize=10)
         data_queue2 = queue.Queue(maxsize=10) if device_count >= 2 else queue.Queue(maxsize=10)
 
-        # Start tracking thread
         process_thread = threading.Thread(target=track, args=(data_queue1, data_queue2))
         process_thread.daemon = True
         process_thread.start()
         
-        # Start camera threads
         camera1_thread = threading.Thread(target=run_single_camera, args=(0, data_queue1))
         camera1_thread.daemon = True
         camera1_thread.start()
@@ -258,7 +224,6 @@ def main():
             print("\nKeyboard interrupt received. Stopping...")
             running.clear()
         
-        # Wait for threads to finish
         print('Stopping cameras...')
         camera1_thread.join(timeout=2)
         if camera2_thread:
@@ -271,23 +236,6 @@ def main():
         print(f'Error: {ex}')
         return False
 
-
-# Try to detect devices using pyk4a
-device_count = 0
-try:
-    for i in range(4):
-        try:
-            # Try to create a PyK4A instance
-            k4a = PyK4A(device_id=i)
-            k4a.start()
-            device_count += 1
-            print(f'Found device {i}')
-            k4a.stop()
-        except Exception as e:
-            print(f'No device found at ID {i}')
-            break
-except Exception as e:
-    print(f'Error during device detection: {e}')
 
 if __name__ == '__main__':
     try:
