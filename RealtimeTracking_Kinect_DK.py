@@ -2,10 +2,11 @@ import sys
 import time
 import threading
 import cv2
-import numpy as np
-from pykinect_azure import pykinect
+import pykinect_azure as pykinect
 from pykinect_azure.k4a import *
+from pykinect_azure.k4a import Image
 from lib.ImageOperations import _find_dot
+from pykinect_azure.k4a import _k4a
 from lib.Helpers import find_point_correspondance_and_object_points, get_extrinsics
 import queue
 import socket
@@ -22,7 +23,6 @@ def track_points(kinect, data_queue: queue.Queue, preview=False):
     """
     global running
     try:
-        # Get device serial number for window identification
         device_serial_number = kinect.get_serialnum()
         print(f'Device serial number: {device_serial_number}')
         
@@ -34,7 +34,6 @@ def track_points(kinect, data_queue: queue.Queue, preview=False):
         
         frame_count = 0
         start_time = time.time()
-        fps = 0
         time.sleep(1)  # Allow camera to stabilize
         
         while running.is_set():
@@ -42,11 +41,57 @@ def track_points(kinect, data_queue: queue.Queue, preview=False):
                 capture = kinect.get_capture()
                 
                 if capture is not None:
-                    # Get color image using the correct method
-                    color_image = capture.get_color_image()
+                    # Use the public API method to get color image
+                    color_image_handle = _k4a.k4a_capture_get_color_image(capture)
+                    if color_image_handle:
+                        try:
+                            # Get image properties first
+                            width = _k4a.k4a_image_get_width_pixels(color_image_handle)
+                            height = _k4a.k4a_image_get_height_pixels(color_image_handle)
+                            buffer_size = _k4a.k4a_image_get_size(color_image_handle)
+                            
+                            # Check if we have valid dimensions
+                            if width > 0 and height > 0 and buffer_size > 0:
+                                # Convert to numpy array using the Image class
+                                color_image_result = Image(color_image_handle).to_numpy()
+
+                                # Check if the result is a tuple (success, array)
+                                if isinstance(color_image_result, tuple):
+                                    success, color_image = color_image_result
+                                    if not success or color_image is None:
+                                        print("Failed to convert image to numpy array")
+                                        _k4a.k4a_image_release(color_image_handle)
+                                        continue
+                                else:
+                                    color_image = color_image_result
+                                
+                                # Check if the result is actually a numpy array
+                                if isinstance(color_image, tuple):
+                                    print(f"Warning: Image conversion returned tuple: {color_image}")
+                                    _k4a.k4a_image_release(color_image_handle)
+                                    continue
+                                    
+                            else:
+                                print(f"Invalid image dimensions: {width}x{height}, buffer size: {buffer_size}")
+                                _k4a.k4a_image_release(color_image_handle)
+                                continue
+                                
+                        except Exception as img_ex:
+                            print(f"Error converting image: {img_ex}")
+                            _k4a.k4a_image_release(color_image_handle)
+                            continue
+                        finally:
+                            _k4a.k4a_image_release(color_image_handle)
+                    else:
+                        continue
+                    
                     if color_image is not None:
-                        # Convert from BGRA to BGR
-                        color_image_bgr = cv2.cvtColor(color_image, cv2.COLOR_BGRA2BGR)
+                        # Convert from BGRA to BGR if needed
+                        if color_image.shape[2] == 4:  # BGRA
+                            color_image_bgr = cv2.cvtColor(color_image, cv2.COLOR_BGRA2BGR)
+                        else:  # Already BGR
+                            color_image_bgr = color_image
+                            
                         gray_image = cv2.cvtColor(color_image_bgr, cv2.COLOR_BGR2GRAY)
                         
                         processed_image, detected_points = _find_dot(gray_image, print_location=True)
@@ -59,29 +104,17 @@ def track_points(kinect, data_queue: queue.Queue, preview=False):
                             print("Queue is full")
                         
                         frame_count += 1
-                        if frame_count % 30 == 0:
-                            end_time = time.time()
-                            fps = frame_count / (end_time - start_time)
-                            frame_count = 0
-                            start_time = end_time
                         
                         if preview:
-                            cv2.putText(processed_image, f"FPS: {fps:.1f}", (10, 30), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                             cv2.imshow(window_name, processed_image)
-                            
-                            key = cv2.waitKey(1) & 0xFF
-                            if key == 27:  # ESC
-                                print('ESC pressed. Exiting...')
+                            if cv2.waitKey(1) & 0xFF == ord('q'):
                                 running.clear()
                                 break
                     
-                    time.sleep(0.001)
-                    
             except Exception as ex:
                 print(f'Error during capture: {ex}')
-                continue
-        
+                time.sleep(0.01)  # Small delay to prevent busy waiting
+
         if preview:
             cv2.destroyWindow(window_name)
         print("Kinect feed stopped")
@@ -159,10 +192,10 @@ def run_single_camera(device_id, data_queue):
         pykinect.initialize_libraries(track_body=False)
         
         device_config = pykinect.default_configuration
-        device_config.color_format = pykinect._k4a.K4A_IMAGE_FORMAT_COLOR_BGRA32
-        device_config.color_resolution = pykinect._k4a.K4A_COLOR_RESOLUTION_720P
-        device_config.depth_mode = pykinect._k4a.K4A_DEPTH_MODE_WFOV_2X2BINNED
-        device_config.camera_fps = pykinect._k4a.K4A_FRAMES_PER_SECOND_30
+        device_config.color_format = pykinect.K4A_IMAGE_FORMAT_COLOR_BGRA32
+        device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_720P
+        device_config.depth_mode = pykinect.K4A_DEPTH_MODE_WFOV_2X2BINNED
+        device_config.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_30
 
         kinect = pykinect.start_device(config=device_config)
         print(f'Kinect {device_id} initialized successfully')
