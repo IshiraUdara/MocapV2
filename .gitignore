@@ -6,3 +6,4 @@ mocap
 captured_images/
 checkerboard/
 tracking/
+.vscode/
