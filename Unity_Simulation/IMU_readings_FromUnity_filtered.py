@@ -22,7 +22,7 @@ except ImportError as e:
 import math
 
 UDP_IP = "127.0.0.1"
-UDP_PORT = 5000
+UDP_PORT = 5002
 
 # Create queues for passing data between threads
 data_queue = queue.Queue(maxsize=10)

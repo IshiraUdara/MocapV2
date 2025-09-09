@@ -135,7 +135,7 @@ def track(data_queue1: queue.Queue, data_queue2: queue.Queue, stream=True):
     
     if stream:
         HOST = "127.0.0.1"
-        PORT = 5000
+        PORT = 5005
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.bind((HOST, PORT))
         server.listen(1)
