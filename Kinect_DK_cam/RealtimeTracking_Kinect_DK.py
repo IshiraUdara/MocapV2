@@ -1,10 +1,12 @@
 import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 import time
 import threading
 import cv2
 import pykinect_azure as pykinect
 from pykinect_azure.k4a import *
-from pykinect_azure.k4a import Image
 from lib.ImageOperations import _find_dot
 from pykinect_azure.k4a import _k4a
 from lib.Helpers import find_point_correspondance_and_object_points, get_extrinsics
