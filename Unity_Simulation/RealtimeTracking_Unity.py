@@ -269,7 +269,7 @@ def track(data_queue1: queue.Queue, data_queue2: queue.Queue, stream=True):
     if stream:
         try:
             HOST = "127.0.0.1"
-            PORT = 5001  # Different port to avoid conflict with IMU
+            PORT = 5002  # Different port to avoid conflict with IMU
             server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server.bind((HOST, PORT))
