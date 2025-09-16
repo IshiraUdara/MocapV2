@@ -7,3 +7,4 @@ captured_images/
 checkerboard/
 tracking/
 .vscode/
+test*.py
