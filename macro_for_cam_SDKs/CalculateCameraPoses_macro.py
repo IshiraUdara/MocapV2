@@ -191,6 +191,10 @@ def calculate_extrinsics(image_points):
     if 'Unity' in sys.argv:
         pypreprocessor.defines.append('Unity')
 
+    # run the script in 'EZVIZ' mode
+    if 'EZVIZ' in sys.argv:
+        pypreprocessor.defines.append('EZVIZ')
+
     pypreprocessor.parse()
 
     #endexclude
@@ -207,6 +211,12 @@ def calculate_extrinsics(image_points):
     #ifdef Unity
     image1 = cv.imread("Unity_Simulation/captured_images/cam0/1757912189.png")
     image2 = cv.imread("Unity_Simulation/captured_images/cam1/1757912189.png")
+
+    #else
+    #ifdef EZVIZ
+    image1 = cv.imread("EZVIZ_cam/captured_images/cam0/1748511905.png")
+    image2 = cv.imread("EZVIZ_cam/captured_images/cam1/1748511905.png")
+
     #endifall
 
     camera_poses = [{

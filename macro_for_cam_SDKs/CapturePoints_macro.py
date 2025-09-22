@@ -233,6 +233,10 @@ if 'Azure' in sys.argv:
 if 'Unity' in sys.argv:
     pypreprocessor.defines.append('Unity')
 
+# run the script in 'EZVIZ' mode
+if 'EZVIZ' in sys.argv:
+    pypreprocessor.defines.append('EZVIZ')
+
 pypreprocessor.parse()
 
 #endexclude
@@ -260,4 +264,14 @@ if __name__ == "__main__":
     points = capture_pose_points(images,preview=True,debug=True)
     print(points)
     save_points(points)
+
+#else
+#ifdef EZVIZ
+
+if __name__ == "__main__":
+    images = read_images(path="EZVIZ_cam/captured_images",debug=True)
+    points = capture_pose_points(images,preview=True,debug=True)
+    print(points)
+    save_points(points)
+
 #endifall

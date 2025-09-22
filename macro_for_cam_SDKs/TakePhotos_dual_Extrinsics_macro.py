@@ -29,6 +29,10 @@ if 'Azure' in sys.argv:
 if 'Unity' in sys.argv:
     pypreprocessor.defines.append('Unity')
 
+# run the script in 'EZVIZ' mode
+if 'EZVIZ' in sys.argv:
+    pypreprocessor.defines.append('EZVIZ')
+
 pypreprocessor.parse()
 
 #endexclude
@@ -151,9 +155,9 @@ def acquire_and_display_images_flir(cam, nodemap, nodemap_tldevice, cam_num, fli
                     if take_photo.is_set():
                         print(f'Taking photo...{cam_num}')
                         if floor:
-                            image_name = f'FLIR/tracking/cam{cam_num}/{int(time.time())}.png'
+                            image_name = f'macro_for_cam_SDKs/FLIR/tracking/cam{cam_num}/{int(time.time())}.png'
                         else:
-                            image_name = f'FLIR/captured_images/cam{cam_num}/{int(time.time())}.png'
+                            image_name = f'macro_for_cam_SDKs/FLIR/captured_images/cam{cam_num}/{int(time.time())}.png'
                         cv2.imwrite(image_name, image_data)
                         take_photo.clear() # idk why but it works
                 
@@ -301,9 +305,9 @@ def acquire_and_display_images_azure(kinect, cam_num, flipped=True, floor=False)
         
         # Create directories if they don't exist
         if floor:
-            os.makedirs(f'Kinect_DK_cam/tracking/cam{cam_num}', exist_ok=True)
+            os.makedirs(f'macro_for_cam_SDKs/Kinect_DK_cam/tracking/cam{cam_num}', exist_ok=True)
         else:
-            os.makedirs(f'Kinect_DK_cam/captured_images/cam{cam_num}', exist_ok=True)
+            os.makedirs(f'macro_for_cam_SDKs/Kinect_DK_cam/captured_images/cam{cam_num}', exist_ok=True)
 
         # Main acquisition loop
         while running.is_set():
@@ -390,9 +394,9 @@ def acquire_and_display_images_azure(kinect, cam_num, flipped=True, floor=False)
                     if take_photo.is_set():
                         print(f'Taking photo...{cam_num}')
                         if floor:
-                            image_name = f'Kinect_DK_cam/tracking/cam{cam_num}/{int(time.time())}.png'
+                            image_name = f'macro_for_cam_SDKs/Kinect_DK_cam/tracking/cam{cam_num}/{int(time.time())}.png'
                         else:
-                            image_name = f'Kinect_DK_cam/captured_images/cam{cam_num}/{int(time.time())}.png'
+                            image_name = f'macro_for_cam_SDKs/Kinect_DK_cam/captured_images/cam{cam_num}/{int(time.time())}.png'
                         cv2.imwrite(image_name, image_data)
                         take_photo.clear()
                 
@@ -792,6 +796,174 @@ def main(auto=False, floor=False, flipped=True):
 if __name__ == '__main__':
     try:
         success = main(auto=False, floor=False, flipped=True)
+        print('Exiting...')
+        sys.exit(0 if success else 1)
+    except KeyboardInterrupt:
+        print("\nProgram interrupted by user")
+        running.clear()
+        sys.exit(0)
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        sys.exit(1)
+
+#else
+#ifdef EZVIZ
+
+# Change this to your Ezviz H3C RTSP URL
+# Format: rtsp://admin:VERIFICATION_CODE@<IP>:<PORT>/h264
+CAMERA_STREAMS = [
+    "rtsp://admin:WOJWUD@192.168.1.112:554/h264",  # Camera 1
+    # Add more streams here if you have multiple Ezviz cameras
+]
+
+def acquire_and_display_images_ezviz(rtsp_url, cam_num, flipped=True, floor=False):
+    """
+    Continuously acquires images from an Ezviz H3C camera using RTSP and displays them.
+
+    :param rtsp_url: RTSP URL of the Ezviz camera
+    :param cam_num: Camera number for saving images
+    :param flipped: Whether to flip the image horizontally
+    :param floor: Whether to save in tracking folder or captured_images folder
+    """
+    global running, take_photo
+    try:
+        window_name = f'Ezviz H3C Feed - Cam{cam_num}'
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
+        print(f'Starting Ezviz H3C feed on {rtsp_url}')
+
+        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+
+        if not cap.isOpened():
+            print(f"Failed to open stream for camera {cam_num}")
+            return False
+
+        # Frame rate calculation variables
+        frame_count = 0
+        start_time = time.time()
+        fps = 0
+        time.sleep(1)
+
+        # Create directories
+        if floor:
+            os.makedirs(f'macro_for_cam_SDKs/Ezviz_H3C_cam/tracking/cam{cam_num}', exist_ok=True)
+        else:
+            os.makedirs(f'macro_for_cam_SDKs/Ezviz_H3C_cam/captured_images/cam{cam_num}', exist_ok=True)
+
+        while running.is_set():
+            ret, frame = cap.read()
+            if not ret:
+                print(f"Camera {cam_num}: No frame received")
+                time.sleep(0.1)
+                continue
+
+            # Flip if requested
+            if flipped:
+                frame = cv2.flip(frame, 1)
+
+            # FPS calculation
+            frame_count += 1
+            if frame_count % 30 == 0:
+                end_time = time.time()
+                fps = frame_count / (end_time - start_time)
+                frame_count = 0
+                start_time = end_time
+
+            # Add FPS text
+            cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+            # Show the feed
+            cv2.imshow(window_name, frame)
+
+            # Handle keypress
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:  # ESC
+                print('ESC pressed. Exiting...')
+                running.clear()
+                break
+            elif key == ord('s'):  # save photo
+                take_photo.set()
+
+            # Save photo if triggered
+            if take_photo.is_set():
+                print(f'Taking photo... cam{cam_num}')
+                if floor:
+                    image_name = f'macro_for_cam_SDKs/Ezviz_H3C_cam/tracking/cam{cam_num}/{int(time.time())}.png'
+                else:
+                    image_name = f'macro_for_cam_SDKs/Ezviz_H3C_cam/captured_images/cam{cam_num}/{int(time.time())}.png'
+                cv2.imwrite(image_name, frame)
+                take_photo.clear()
+
+            time.sleep(0.001)
+
+        cap.release()
+        cv2.destroyWindow(window_name)
+        print(f"Ezviz H3C cam{cam_num} feed stopped")
+
+    except Exception as ex:
+        print(f'Error in cam{cam_num}: {ex}')
+        return False
+
+    return True
+
+
+def run_single_camera_ezviz(rtsp_url, cam_num=0, flipped=True, floor=True):
+    """Initialize and run a single Ezviz camera feed"""
+    try:
+        result = acquire_and_display_images_ezviz(rtsp_url, cam_num, flipped, floor)
+        return result
+    except Exception as ex:
+        print(f'Error running Ezviz cam{cam_num}: {ex}')
+        return False
+
+
+def main_ezviz(auto=False, floor=False, flipped=True):
+    """Main function for Ezviz cameras"""
+    print('Ezviz H3C mode activated')
+    global running
+    try:
+        print(f'MoCap v2.0 - Ezviz H3C')
+        device_count = len(CAMERA_STREAMS)
+        print(f'Number of Ezviz cameras configured: {device_count}')
+
+        if device_count == 0:
+            print('No Ezviz cameras configured!')
+            sys.exit(0)
+
+        # Start camera threads
+        threads = []
+        for idx, rtsp_url in enumerate(CAMERA_STREAMS):
+            t = threading.Thread(target=run_single_camera_ezviz, args=(rtsp_url, idx, flipped, floor))
+            t.daemon = True
+            t.start()
+            threads.append(t)
+
+        time.sleep(5)  # Let cameras initialize
+
+        # Main loop
+        while running.is_set():
+            time.sleep(0.5)
+            if auto:
+                take_photo.set()
+                time.sleep(0.5)
+                take_photo.clear()
+
+        print('Stopping cameras...')
+        for t in threads:
+            t.join(timeout=2)
+
+        print('\nDone!')
+        return True
+
+    except Exception as ex:
+        print(f'Error: {ex}')
+        return False
+
+
+if __name__ == '__main__':
+    try:
+        success = main_ezviz(auto=False, floor=False, flipped=True)
         print('Exiting...')
         sys.exit(0 if success else 1)
     except KeyboardInterrupt:

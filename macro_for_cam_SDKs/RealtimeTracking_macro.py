@@ -14,7 +14,7 @@ from lib.Helpers import find_point_correspondance_and_object_points, get_extrins
 import queue
 import socket
 import msgpack
-import PySpin
+
 import numpy as np
 import mmap
 
@@ -50,10 +50,15 @@ if 'Azure' in sys.argv:
 if 'Unity' in sys.argv:
     pypreprocessor.defines.append('Unity')
 
+# run the script in 'EZVIZ' mode
+if 'EZVIZ' in sys.argv:
+    pypreprocessor.defines.append('EZVIZ')
+
 pypreprocessor.parse()
 
 #endexclude
 #ifdef FLIR
+import PySpin
 
 def track_points(cam, nodemap, nodemap_tldevice,data_queue:queue.Queue,preview=False):
     """
@@ -202,7 +207,7 @@ def track(data_queue1:queue.Queue,data_queue2:queue.Queue,stream=True):
     
     if stream:
         HOST = "127.0.0.1"
-        PORT = 5000
+        PORT = 5002
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.bind((HOST, PORT))
         server.listen(1)
@@ -492,7 +497,7 @@ def track(data_queue1: queue.Queue, data_queue2: queue.Queue, stream=True):
     
     if stream:
         HOST = "127.0.0.1"
-        PORT = 5001
+        PORT = 5002
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.bind((HOST, PORT))
         server.listen(1)
@@ -1021,6 +1026,188 @@ def main(preview=True):
     except Exception as ex:
         print(f'Error: {ex}')
         return False
+    
+#else
+#ifdef EZVIZ
+
+# ⚠️ Update with your correct RTSP URL
+# Try variations if needed:
+# rtsp://admin:PASSWORD@192.168.x.x:554/h264
+# rtsp://admin:PASSWORD@192.168.x.x:554/Streaming/Channels/101
+RTSP_URL = "rtsp://admin:WOJWUD@192.168.1.112:554/h264"
+
+
+def track_points(rtsp_url, data_queue: queue.Queue, preview=False):
+    """
+    Continuously acquires images from EZVIZ H3C via RTSP and processes them.
+    """
+    global running
+    try:
+        cap = cv2.VideoCapture(rtsp_url)
+        if not cap.isOpened():
+            print("❌ Failed to open EZVIZ RTSP stream")
+            return False
+
+        window_name = f"EZVIZ H3C Feed"
+        if preview:
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
+        print("Starting EZVIZ image acquisition...")
+
+        frame_count = 0
+        start_time = time.time()
+        time.sleep(1)  # Allow camera to stabilize
+
+        while running.is_set():
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                print("⚠️ No frame received from EZVIZ camera")
+                time.sleep(0.05)
+                continue
+
+            gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            processed_image, detected_points = _find_dot(gray_image, print_location=True)
+
+            try:
+                if data_queue.full():
+                    data_queue.get_nowait()
+                data_queue.put_nowait(detected_points)
+            except queue.Full:
+                print("Queue is full")
+
+            frame_count += 1
+
+            if preview:
+                cv2.imshow(window_name, processed_image)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    running.clear()
+                    break
+
+        cap.release()
+        if preview:
+            cv2.destroyWindow(window_name)
+        print("EZVIZ feed stopped")
+
+    except Exception as ex:
+        print(f"Error: {ex}")
+        return False
+
+    return True
+
+
+def track(data_queue1: queue.Queue, data_queue2: queue.Queue, stream=True):
+    """
+    Process points from 1 or 2 EZVIZ cameras and send to Unity if enabled.
+    """
+    global camera_poses
+    print(camera_poses)
+    print("Tracking started")
+
+    if stream:
+        HOST = "127.0.0.1"
+        PORT = 5002
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind((HOST, PORT))
+        server.listen(1)
+        print("Waiting for Unity to connect...")
+        connection, _ = server.accept()
+        print("Connected!")
+
+    point = [0, 0, 0, 0, 0, 0, 0, 0]
+    fps = 0
+    old_time = time.time()
+
+    while running.is_set():
+        fps = time.time() - old_time
+        old_time = time.time()
+        fps = 1 / fps if fps > 0 else 0
+
+        try:
+            if not (data_queue1.empty() or data_queue2.empty()):
+                data1 = data_queue1.get_nowait()
+                data2 = data_queue2.get_nowait()
+                image_points = [data1, data2]
+                object_points, image_p = find_point_correspondance_and_object_points(
+                    image_points, camera_poses, 4
+                )
+
+                if stream:
+                    if len(object_points) > 0:
+                        point = object_points[0]
+                        point = list(point)
+                        point = [0, 0, 0, 0] + point
+                    data = {"tracker1": point}
+                    try:
+                        connection.send(msgpack.packb(data, use_bin_type=True))
+                        print(f"Object Points: {point}")
+                    except (ConnectionResetError, BrokenPipeError):
+                        print("\nUnity disconnected, waiting for reconnection...")
+                        connection, _ = server.accept()
+                        print("Connected!")
+                        continue
+                else:
+                    print(f"Object Points: {object_points}")
+                print(f"Image Points: {image_p}")
+                print(f"FPS: {fps:.2f}")
+
+        except queue.Empty:
+            pass
+        except Exception as ex:
+            print(f"Tracking error: {ex}")
+
+        time.sleep(0.01)
+
+
+def run_single_camera(rtsp_url, data_queue):
+    """
+    Initialize and run a single EZVIZ H3C camera.
+    """
+    try:
+        print(f"Initializing EZVIZ camera: {rtsp_url}")
+        result = track_points(rtsp_url, data_queue, preview=True)
+        return result
+    except Exception as ex:
+        print(f"Error initializing EZVIZ camera: {ex}")
+        return False
+
+
+def main():
+    """
+    Main entry point.
+    """
+    global running
+    try:
+        print("MoCap v2.0 - EZVIZ H3C")
+
+        data_queue1 = queue.Queue(maxsize=10)
+        data_queue2 = queue.Queue(maxsize=10)  # If you add a 2nd EZVIZ camera
+
+        process_thread = threading.Thread(target=track, args=(data_queue1, data_queue2))
+        process_thread.daemon = True
+        process_thread.start()
+
+        camera1_thread = threading.Thread(target=run_single_camera, args=(RTSP_URL, data_queue1))
+        camera1_thread.daemon = True
+        camera1_thread.start()
+
+        try:
+            while running.is_set():
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("\nKeyboard interrupt received. Stopping...")
+            running.clear()
+
+        print("Stopping cameras...")
+        camera1_thread.join(timeout=2)
+
+        print("\nDone!")
+        return True
+
+    except Exception as ex:
+        print(f"Error: {ex}")
+        return False
+    
 #endifall
 
 if __name__ == '__main__':

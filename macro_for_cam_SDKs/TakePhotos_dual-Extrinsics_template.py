@@ -5,29 +5,59 @@ import cv2
 import pykinect_azure as pykinect
 from pykinect_azure.k4a import *
 from pykinect_azure.k4a import _k4a
+import PySpin
 import os
-import TakePhotos_dual_Extrinsics_macro as template
+import mmap
+import numpy as np
 
 running = threading.Event()
 running.set()
 take_photo = threading.Event()
 take_photo.clear()
 
-def acquire_and_display_images(cam_object, cam_num, flipped=True, floor=False):
+def acquire_and_display_images_azure(kinect, cam_num, flipped=True, floor=False):
+    """
+    This function continuously acquires images from Azure Kinect DK and displays them using OpenCV.
     
+    :param kinect: Azure Kinect device instance.
+    :param cam_num: Camera number for saving images.
+    :param flipped: Whether to flip the image horizontally.
+    :param floor: Whether to save in tracking folder or captured_images folder.
+    :return: True if successful, False otherwise.
+    :rtype: bool
+    """
     global running, take_photo
     try:
-        template.macro().initialize("for_azure")
+        # Get device serial number for window identification
+        device_serial_number = kinect.get_serialnum()
+        print(f'Device serial number: {device_serial_number}')
+        
+        window_name = f'Kinect Feed - {device_serial_number}'
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        
+        print('Starting image acquisition...')
+        
+        # Frame rate calculation variables
+        frame_count = 0
+        start_time = time.time()
+        fps = 0
+        time.sleep(1)  # Allow time for camera to stabilize
+        
+        # Create directories if they don't exist
+        if floor:
+            os.makedirs(f'macro_for_cam_SDKs/Kinect_DK_cam/tracking/cam{cam_num}', exist_ok=True)
+        else:
+            os.makedirs(f'macro_for_cam_SDKs/Kinect_DK_cam/captured_images/cam{cam_num}', exist_ok=True)
 
         # Main acquisition loop
         while running.is_set():
             try:
-                # Get image_result from camera
-                image_result = cam_object.get_capture("Azure")
+                # Get capture from Kinect
+                capture = kinect.get_capture()
                 
-                if image_result is not None:
+                if capture is not None:
                     # Get color image using the k4a function
-                    color_image_handle = _k4a.k4a_capture_get_color_image(image_result)
+                    color_image_handle = _k4a.k4a_capture_get_color_image(capture)
                     if color_image_handle:
                         try:
                             # Get image properties first
@@ -104,9 +134,9 @@ def acquire_and_display_images(cam_object, cam_num, flipped=True, floor=False):
                     if take_photo.is_set():
                         print(f'Taking photo...{cam_num}')
                         if floor:
-                            image_name = f'Kinect_DK_cam/tracking/cam{cam_num}/{int(time.time())}.png'
+                            image_name = f'macro_for_cam_SDKs/Kinect_DK_cam/tracking/cam{cam_num}/{int(time.time())}.png'
                         else:
-                            image_name = f'Kinect_DK_cam/captured_images/cam{cam_num}/{int(time.time())}.png'
+                            image_name = f'macro_for_cam_SDKs/Kinect_DK_cam/captured_images/cam{cam_num}/{int(time.time())}.png'
                         cv2.imwrite(image_name, image_data)
                         take_photo.clear()
                 
@@ -128,7 +158,7 @@ def acquire_and_display_images(cam_object, cam_num, flipped=True, floor=False):
     return True
 
 
-def run_single_camera(device_id, cam_num=0, flipped=True, floor=True):
+def run_single_camera_azure(device_id, cam_num=0, flipped=True, floor=True):
     """
     Kinect initialization and execution function.
     
@@ -155,7 +185,7 @@ def run_single_camera(device_id, cam_num=0, flipped=True, floor=True):
         print(f'Kinect {device_id} initialized successfully')
         
         # Run acquisition and display function
-        result = acquire_and_display_images(kinect, cam_num, flipped, floor)
+        result = acquire_and_display_images_azure(kinect, cam_num, flipped, floor)
         
         return result
         
@@ -164,10 +194,11 @@ def run_single_camera(device_id, cam_num=0, flipped=True, floor=True):
         return False
 
 
-def main(auto=False, floor=False, flipped=True):
+def main_azure(auto=False, floor=False, flipped=True):
     """
     Main function.
     """
+    print('Azure Kinect DK mode activated')
     global running
     try:
         # Initialize pykinect
@@ -191,13 +222,13 @@ def main(auto=False, floor=False, flipped=True):
             print('Continuing with single device for testing...')
         
         # Start camera threads
-        camera1_display = threading.Thread(target=run_single_camera, args=(0, 0, flipped, floor))
+        camera1_display = threading.Thread(target=run_single_camera_azure, args=(0, 0, flipped, floor))
         camera1_display.daemon = True
         camera1_display.start()
         
         camera2_display = None
         if device_count >= 2:
-            camera2_display = threading.Thread(target=run_single_camera, args=(1, 1, flipped, floor))
+            camera2_display = threading.Thread(target=run_single_camera_azure, args=(1, 1, flipped, floor))
             camera2_display.daemon = True
             camera2_display.start()
 
@@ -226,10 +257,240 @@ def main(auto=False, floor=False, flipped=True):
         print(f'Error: {ex}')
         return False
 
+# Change this to your Ezviz H3C RTSP URL
+# Format: rtsp://admin:VERIFICATION_CODE@<IP>:<PORT>/h264
+CAMERA_STREAMS = [
+    "rtsp://admin:WOJWUD@192.168.1.112:554/h264",  # Camera 1
+    # Add more streams here if you have multiple Ezviz cameras
+]
+
+def acquire_and_display_images_ezviz(rtsp_url, cam_num, flipped=True, floor=False):
+    """
+    Continuously acquires images from an Ezviz H3C camera using RTSP and displays them.
+
+    :param rtsp_url: RTSP URL of the Ezviz camera
+    :param cam_num: Camera number for saving images
+    :param flipped: Whether to flip the image horizontally
+    :param floor: Whether to save in tracking folder or captured_images folder
+    """
+    global running, take_photo
+    try:
+        window_name = f'Ezviz H3C Feed - Cam{cam_num}'
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
+        print(f'Starting Ezviz H3C feed on {rtsp_url}')
+
+        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+
+        if not cap.isOpened():
+            print(f"Failed to open stream for camera {cam_num}")
+            return False
+
+        # Frame rate calculation variables
+        frame_count = 0
+        start_time = time.time()
+        fps = 0
+        time.sleep(1)
+
+        # Create directories
+        if floor:
+            os.makedirs(f'macro_for_cam_SDKs/Ezviz_H3C_cam/tracking/cam{cam_num}', exist_ok=True)
+        else:
+            os.makedirs(f'macro_for_cam_SDKs/Ezviz_H3C_cam/captured_images/cam{cam_num}', exist_ok=True)
+
+        while running.is_set():
+            ret, frame = cap.read()
+            if not ret:
+                print(f"Camera {cam_num}: No frame received")
+                time.sleep(0.1)
+                continue
+
+            # Flip if requested
+            if flipped:
+                frame = cv2.flip(frame, 1)
+
+            # FPS calculation
+            frame_count += 1
+            if frame_count % 30 == 0:
+                end_time = time.time()
+                fps = frame_count / (end_time - start_time)
+                frame_count = 0
+                start_time = end_time
+
+            # Add FPS text
+            cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+            # Show the feed
+            cv2.imshow(window_name, frame)
+
+            # Handle keypress
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:  # ESC
+                print('ESC pressed. Exiting...')
+                running.clear()
+                break
+            elif key == ord('s'):  # save photo
+                take_photo.set()
+
+            # Save photo if triggered
+            if take_photo.is_set():
+                print(f'Taking photo... cam{cam_num}')
+                if floor:
+                    image_name = f'macro_for_cam_SDKs/Ezviz_H3C_cam/tracking/cam{cam_num}/{int(time.time())}.png'
+                else:
+                    image_name = f'macro_for_cam_SDKs/Ezviz_H3C_cam/captured_images/cam{cam_num}/{int(time.time())}.png'
+                cv2.imwrite(image_name, frame)
+                take_photo.clear()
+
+            time.sleep(0.001)
+
+        cap.release()
+        cv2.destroyWindow(window_name)
+        print(f"Ezviz H3C cam{cam_num} feed stopped")
+
+    except Exception as ex:
+        print(f'Error in cam{cam_num}: {ex}')
+        return False
+
+    return True
+
+
+def run_single_camera_ezviz(rtsp_url, cam_num=0, flipped=True, floor=True):
+    """Initialize and run a single Ezviz camera feed"""
+    try:
+        result = acquire_and_display_images_ezviz(rtsp_url, cam_num, flipped, floor)
+        return result
+    except Exception as ex:
+        print(f'Error running Ezviz cam{cam_num}: {ex}')
+        return False
+
+
+def main_ezviz(auto=False, floor=False, flipped=True):
+    """Main function for Ezviz cameras"""
+    print('Ezviz H3C mode activated')
+    global running
+    try:
+        print(f'MoCap v2.0 - Ezviz H3C')
+        device_count = len(CAMERA_STREAMS)
+        print(f'Number of Ezviz cameras configured: {device_count}')
+
+        if device_count == 0:
+            print('No Ezviz cameras configured!')
+            sys.exit(0)
+
+        # Start camera threads
+        threads = []
+        for idx, rtsp_url in enumerate(CAMERA_STREAMS):
+            t = threading.Thread(target=run_single_camera_ezviz, args=(rtsp_url, idx, flipped, floor))
+            t.daemon = True
+            t.start()
+            threads.append(t)
+
+        time.sleep(5)  # Let cameras initialize
+
+        # Main loop
+        while running.is_set():
+            time.sleep(0.5)
+            if auto:
+                take_photo.set()
+                time.sleep(0.5)
+                take_photo.clear()
+
+        print('Stopping cameras...')
+        for t in threads:
+            t.join(timeout=2)
+
+        print('\nDone!')
+        return True
+
+    except Exception as ex:
+        print(f'Error: {ex}')
+        return False
+
+def main_combined(auto=False, floor=False, flipped=True):
+    """Main function for Ezviz cameras"""
+    print('Ezviz H3C mode activated')
+    global running
+    try:
+        print(f'MoCap v2.0 - Ezviz H3C')
+        device_count = len(CAMERA_STREAMS)
+        print(f'Number of Ezviz cameras configured: {device_count}')
+
+        if device_count == 0:
+            print('No Ezviz cameras configured!')
+            sys.exit(0)
+
+        # Start camera threads
+        threads = []
+        for idx, rtsp_url in enumerate(CAMERA_STREAMS):
+            t = threading.Thread(target=run_single_camera_ezviz, args=(rtsp_url, idx, flipped, floor))
+            t.daemon = True
+            t.start()
+            threads.append(t)
+  
+        print('Azure Kinect DK mode activated')
+
+        # Initialize pykinect
+        pykinect.initialize_libraries(track_body=False)
+        
+        print(f'MoCap v2.0 - Azure Kinect DK')
+        
+        # Try to detect available devices
+        device_count_azure = 1  # Assume 1 device for now since detection is unreliable
+        print(f'Number of Kinect devices detected: {device_count_azure}')
+
+        # Check if devices are available
+        if device_count_azure == 0:
+            print('No Kinect devices detected!')
+            input('Press Enter to exit...')
+            sys.exit(0)
+            return False
+        
+        # if device_count < 2:
+        #     print('Warning: Only one Kinect device detected. Dual camera setup requires at least 2 devices.')
+        #     print('Continuing with single device for testing...')
+        
+        # Start camera threads
+        camera1_display = threading.Thread(target=run_single_camera_azure, args=(0, 0, flipped, floor))
+        camera1_display.daemon = True
+        camera1_display.start()
+        
+        camera2_display = None
+        if device_count >= 2:
+            camera2_display = threading.Thread(target=run_single_camera_azure, args=(1, 1, flipped, floor))
+            camera2_display.daemon = True
+            camera2_display.start()
+
+        time.sleep(8)  # Allow cameras to initialize
+       
+        # Main loop
+        while running.is_set():
+            time.sleep(0.5)
+            if auto:
+                take_photo.set()
+                time.sleep(0.5)
+                take_photo.clear()
+
+        print('Stopping cameras...')
+        for t in threads:
+            t.join(timeout=2)
+        
+        camera1_display.join(timeout=2)
+        if camera2_display:
+            camera2_display.join(timeout=2)
+
+        print('\nDone!')
+        return True
+
+    except Exception as ex:
+        print(f'Error: {ex}')
+        return False
+
 
 if __name__ == '__main__':
     try:
-        success = main(auto=False, floor=False, flipped=True)
+        success = main_combined(auto=False, floor=False, flipped=True)
         print('Exiting...')
         sys.exit(0 if success else 1)
     except KeyboardInterrupt:
