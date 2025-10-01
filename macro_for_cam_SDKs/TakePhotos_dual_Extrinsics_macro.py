@@ -812,7 +812,7 @@ if __name__ == '__main__':
 # Change this to your Ezviz H3C RTSP URL
 # Format: rtsp://admin:VERIFICATION_CODE@<IP>:<PORT>/h264
 CAMERA_STREAMS = [
-    "rtsp://admin:WOJWUD@192.168.1.112:554/h264",  # Camera 1
+    "rtsp://admin:WOJWUD@169.254.27.194:554/h264",  # Camera 1
     # Add more streams here if you have multiple Ezviz cameras
 ]
 

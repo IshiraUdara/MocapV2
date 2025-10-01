@@ -243,7 +243,7 @@ pypreprocessor.parse()
 #ifdef FLIR
 
 if __name__ == "__main__":
-    images = read_images(path="FLIR/captured_images",debug=True)
+    images = read_images(path="macro_for_cam_SDKs/FLIR/captured_images",debug=True)
     points = capture_pose_points(images,preview=True,debug=True)
     print(points)
     save_points(points)
@@ -252,7 +252,7 @@ if __name__ == "__main__":
 #ifdef Azure
 
 if __name__ == "__main__":
-    images = read_images(path="Kinect_DK_cam/captured_images",debug=True)
+    images = read_images(path="macro_for_cam_SDKs/Kinect_DK_cam/captured_images",debug=True)
     points = capture_pose_points(images,preview=True,debug=True)
     print(points)
     save_points(points)
@@ -260,7 +260,7 @@ if __name__ == "__main__":
 #ifdef Unity
 
 if __name__ == "__main__":
-    images = read_images(path="Unity_Simulation/captured_images",debug=True)
+    images = read_images(path="macro_for_cam_SDKs/Unity_Simulation/captured_images",debug=True)
     points = capture_pose_points(images,preview=True,debug=True)
     print(points)
     save_points(points)
@@ -269,7 +269,7 @@ if __name__ == "__main__":
 #ifdef EZVIZ
 
 if __name__ == "__main__":
-    images = read_images(path="EZVIZ_cam/captured_images",debug=True)
+    images = read_images(path="macro_for_cam_SDKs/EZVIZ_cam/captured_images",debug=True)
     points = capture_pose_points(images,preview=True,debug=True)
     print(points)
     save_points(points)

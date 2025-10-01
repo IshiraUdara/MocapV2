@@ -27,42 +27,7 @@ def calculate_camera_intrinsics(wait_time=1):
     objp[0,:,:2] = np.mgrid[0:CHECKERBOARD[0], 0:CHECKERBOARD[1]].T.reshape(-1, 2)
     prev_img_shape = None
     
-
-    #exclude
-    # run the script in 'FLIR' mode
-    if 'FLIR' in sys.argv:
-        pypreprocessor.defines.append('FLIR')
-
-    # run the script in 'Azure' mode
-    if 'Azure' in sys.argv:
-        pypreprocessor.defines.append('Azure')
-
-    # run the script in 'Unity' mode
-    if 'Unity' in sys.argv:
-        pypreprocessor.defines.append('Unity')
-
-    # run the script in 'EZVIZ' mode
-    if 'EZVIZ' in sys.argv:
-        pypreprocessor.defines.append('EZVIZ')
-
-    pypreprocessor.parse()
-
-    #endexclude
-    #ifdef FLIR
-    image_names = glob.glob(f'FLIR_cam/{cam_images_folder_name}/*.png')
-
-    #else
-    #ifdef Azure
-    image_names = glob.glob(f'Kinect_DK_cam/{cam_images_folder_name}/*.png')
-    
-    #else
-    #ifdef Unity
-    image_names = glob.glob(f'Unity_Simulation/{cam_images_folder_name}/*.png')
-
-    #else
-    #ifdef EZVIZ
-    image_names = glob.glob(f'EZVIZ_cam/{cam_images_folder_name}/*.png')
-    #endifall
+    image_names = glob.glob(f'macro_for_cam_SDKs/{cam_images_folder_name}/*.png')
 
     print(image_names)
     window_name = "Checkerboad"

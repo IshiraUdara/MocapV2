@@ -12,30 +12,42 @@ import numpy as np
 
 running = threading.Event()
 running.set()
-take_photo = threading.Event()
-take_photo.clear()
 
-def acquire_and_display_images_azure(kinect, cam_num, flipped=True, floor=False):
+# Create separate events for each camera
+take_photo_events = {}  # Dictionary to store events for each camera
+
+def get_camera_event(cam_num):
+    """Get or create a photo event for a specific camera"""
+    if cam_num not in take_photo_events:
+        take_photo_events[cam_num] = threading.Event()
+        take_photo_events[cam_num].clear()
+    return take_photo_events[cam_num]
+
+def trigger_all_cameras():
+    """Trigger photo capture for all cameras simultaneously"""
+    for event in take_photo_events.values():
+        event.set()
+
+def acquire_and_display_images_kinect(kinect, cam_num, flipped=True, floor=False):
     """
-    This function continuously acquires images from Azure Kinect DK and displays them using OpenCV.
+    This function continuously acquires IR images from Azure Kinect DK and displays them using OpenCV.
+    """
+    global running
+    camera_event = get_camera_event(cam_num)
     
-    :param kinect: Azure Kinect device instance.
-    :param cam_num: Camera number for saving images.
-    :param flipped: Whether to flip the image horizontally.
-    :param floor: Whether to save in tracking folder or captured_images folder.
-    :return: True if successful, False otherwise.
-    :rtype: bool
-    """
-    global running, take_photo
+    # Initialize variables outside the loop
+    ir_image = None
+    ir_image_8bit = None
+    
     try:
         # Get device serial number for window identification
         device_serial_number = kinect.get_serialnum()
         print(f'Device serial number: {device_serial_number}')
         
-        window_name = f'Kinect Feed - {device_serial_number}'
+        window_name = f'Kinect IR Feed - {device_serial_number}'
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         
-        print('Starting image acquisition...')
+        print('Starting IR image acquisition...')
         
         # Frame rate calculation variables
         frame_count = 0
@@ -45,9 +57,9 @@ def acquire_and_display_images_azure(kinect, cam_num, flipped=True, floor=False)
         
         # Create directories if they don't exist
         if floor:
-            os.makedirs(f'macro_for_cam_SDKs/Kinect_DK_cam/tracking/cam{cam_num}', exist_ok=True)
+            os.makedirs(f'macro_for_cam_SDKs/Kinect_x_EZVIZ/tracking/cam{cam_num}', exist_ok=True)
         else:
-            os.makedirs(f'macro_for_cam_SDKs/Kinect_DK_cam/captured_images/cam{cam_num}', exist_ok=True)
+            os.makedirs(f'macro_for_cam_SDKs/Kinect_x_EZVIZ/captured_images/cam{cam_num}', exist_ok=True)
 
         # Main acquisition loop
         while running.is_set():
@@ -56,35 +68,42 @@ def acquire_and_display_images_azure(kinect, cam_num, flipped=True, floor=False)
                 capture = kinect.get_capture()
                 
                 if capture is not None:
-                    # Get color image using the k4a function
-                    color_image_handle = _k4a.k4a_capture_get_color_image(capture)
-                    if color_image_handle:
+                    # Get IR image using the k4a function
+                    ir_image_handle = _k4a.k4a_capture_get_ir_image(capture)
+                    if ir_image_handle:
                         try:
                             # Get image properties first
-                            width = _k4a.k4a_image_get_width_pixels(color_image_handle)
-                            height = _k4a.k4a_image_get_height_pixels(color_image_handle)
-                            buffer_size = _k4a.k4a_image_get_size(color_image_handle)
+                            width = _k4a.k4a_image_get_width_pixels(ir_image_handle)
+                            height = _k4a.k4a_image_get_height_pixels(ir_image_handle)
+                            buffer_size = _k4a.k4a_image_get_size(ir_image_handle)
                             
                             # Check if we have valid dimensions
                             if width > 0 and height > 0 and buffer_size > 0:
                                 # Convert to numpy array using the Image class
-                                color_image_result = Image(color_image_handle).to_numpy()
+                                ir_image_result = Image(ir_image_handle).to_numpy()
 
                                 # Check if the result is a tuple (success, array)
-                                if isinstance(color_image_result, tuple):
-                                    success, color_image = color_image_result
-                                    if not success or color_image is None:
-                                        print("Failed to convert image to numpy array")
-                                        _k4a.k4a_image_release(color_image_handle)
+                                if isinstance(ir_image_result, tuple):
+                                    success, ir_image = ir_image_result
+                                    if not success or ir_image is None:
+                                        print("Failed to convert IR image to numpy array")
+                                        _k4a.k4a_image_release(ir_image_handle)
                                         continue
                                 else:
-                                    color_image = color_image_result
+                                    ir_image = ir_image_result
                                 
-                                # Convert from BGRA to BGR
-                                if color_image.shape[2] == 4:  # BGRA
-                                    image_data = cv2.cvtColor(color_image, cv2.COLOR_BGRA2BGR)
-                                else:  # Already BGR
-                                    image_data = color_image
+                                # IR image is typically 16-bit, convert to 8-bit for display
+                                if ir_image.dtype == np.uint16:
+                                    # Normalize to 8-bit range for display
+                                    ir_image_8bit = (ir_image / 256).astype(np.uint8)
+                                else:
+                                    ir_image_8bit = ir_image
+                                
+                                # Convert grayscale to BGR for OpenCV display
+                                if len(ir_image_8bit.shape) == 2:  # Grayscale
+                                    image_data = cv2.cvtColor(ir_image_8bit, cv2.COLOR_GRAY2BGR)
+                                else:
+                                    image_data = ir_image_8bit
                                 
                                 # Apply horizontal flip if requested
                                 if flipped:
@@ -93,16 +112,16 @@ def acquire_and_display_images_azure(kinect, cam_num, flipped=True, floor=False)
                                     image_data_flipped = image_data
                                 
                             else:
-                                print(f"Invalid image dimensions: {width}x{height}, buffer size: {buffer_size}")
-                                _k4a.k4a_image_release(color_image_handle)
+                                print(f"Invalid IR image dimensions: {width}x{height}, buffer size: {buffer_size}")
+                                _k4a.k4a_image_release(ir_image_handle)
                                 continue
                                 
                         except Exception as img_ex:
-                            print(f"Error converting image: {img_ex}")
-                            _k4a.k4a_image_release(color_image_handle)
+                            print(f"Error converting IR image: {img_ex}")
+                            _k4a.k4a_image_release(ir_image_handle)
                             continue
                         finally:
-                            _k4a.k4a_image_release(color_image_handle)
+                            _k4a.k4a_image_release(ir_image_handle)
                     else:
                         continue
                     
@@ -115,7 +134,7 @@ def acquire_and_display_images_azure(kinect, cam_num, flipped=True, floor=False)
                         start_time = end_time
                     
                     # Add FPS text to the image
-                    cv2.putText(image_data_flipped, f"FPS: {fps:.1f}", (10, 30),
+                    cv2.putText(image_data_flipped, f"IR FPS: {fps:.1f}", (10, 30),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                     
                     # Display the image using OpenCV
@@ -128,28 +147,38 @@ def acquire_and_display_images_azure(kinect, cam_num, flipped=True, floor=False)
                         running.clear()
                         break
                     elif key == ord('s'):  # 's' key for saving image
-                        take_photo.set()
+                        trigger_all_cameras()  # Trigger all cameras
+                
+                # Check if photo should be taken for this camera - INSIDE THE LOOP
+                if camera_event.is_set() and ir_image is not None:
+                    print(f'Taking IR photo...{cam_num}')
+                    if floor:
+                        image_name = f'macro_for_cam_SDKs/Kinect_x_EZVIZ/tracking/cam{cam_num}/{int(time.time())}.png'
+                    else:
+                        image_name = f'macro_for_cam_SDKs/Kinect_x_EZVIZ/captured_images/cam{cam_num}/{int(time.time())}.png'
                     
-                    # Check if photo should be taken
-                    if take_photo.is_set():
-                        print(f'Taking photo...{cam_num}')
-                        if floor:
-                            image_name = f'macro_for_cam_SDKs/Kinect_DK_cam/tracking/cam{cam_num}/{int(time.time())}.png'
-                        else:
-                            image_name = f'macro_for_cam_SDKs/Kinect_DK_cam/captured_images/cam{cam_num}/{int(time.time())}.png'
-                        cv2.imwrite(image_name, image_data)
-                        take_photo.clear()
-                
-                # Small delay to prevent excessive CPU usage
-                time.sleep(0.001)
-                
-            except Exception as ex:
-                print(f'Error during capture: {ex}')
+                    # Resize IR image to match Ezviz dimensions (1280x720) and convert to 3-channel
+                    if ir_image.dtype == np.uint16:
+                        ir_resized = cv2.resize(ir_image_8bit, (1280, 720))
+                    else:
+                        ir_resized = cv2.resize(ir_image, (1280, 720))
+                    
+                    # Convert grayscale to 3-channel BGR to match Ezviz format
+                    if len(ir_resized.shape) == 2:
+                        ir_bgr = cv2.cvtColor(ir_resized, cv2.COLOR_GRAY2BGR)
+                    else:
+                        ir_bgr = ir_resized
+                        
+                    cv2.imwrite(image_name, ir_bgr)
+                    camera_event.clear()  # Clear only this camera's event
+                    
+            except Exception as loop_ex:
+                print(f"Error during acquisition loop: {loop_ex}")
                 continue
-        
+    
         # Clean up
         cv2.destroyWindow(window_name)
-        print("Kinect feed stopped")
+        print("Kinect IR feed stopped")
         
     except Exception as ex:
         print(f'Error: {ex}')
@@ -160,7 +189,7 @@ def acquire_and_display_images_azure(kinect, cam_num, flipped=True, floor=False)
 
 def run_single_camera_azure(device_id, cam_num=0, flipped=True, floor=True):
     """
-    Kinect initialization and execution function.
+    Kinect initialization and execution function for IR capture.
     
     :param device_id: Kinect device ID (0 for first device, 1 for second, etc.)
     :param cam_num: Camera number for saving images.
@@ -173,94 +202,32 @@ def run_single_camera_azure(device_id, cam_num=0, flipped=True, floor=True):
         # Initialize pykinect
         pykinect.initialize_libraries(track_body=False)
         
-        # Configure device
+        # Configure device for IR capture
         device_config = pykinect.default_configuration
-        device_config.color_format = pykinect.K4A_IMAGE_FORMAT_COLOR_BGRA32
-        device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_720P
-        device_config.depth_mode = pykinect.K4A_DEPTH_MODE_WFOV_2X2BINNED
+        # Disable color camera to save bandwidth and focus on IR
+    
+        device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_OFF
+        # Enable depth mode to get IR data
+        device_config.depth_mode = pykinect.K4A_DEPTH_MODE_NFOV_2X2BINNED
         device_config.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_30
         
         # Start device
         kinect = pykinect.start_device(config=device_config)
-        print(f'Kinect {device_id} initialized successfully')
+        print(f'Kinect {device_id} initialized successfully for IR capture')
         
         # Run acquisition and display function
-        result = acquire_and_display_images_azure(kinect, cam_num, flipped, floor)
+        result = acquire_and_display_images_kinect(kinect, cam_num, flipped, floor)
         
         return result
         
     except Exception as ex:
-        print(f'Error initializing Kinect {device_id}: {ex}')
-        return False
-
-
-def main_azure(auto=False, floor=False, flipped=True):
-    """
-    Main function.
-    """
-    print('Azure Kinect DK mode activated')
-    global running
-    try:
-        # Initialize pykinect
-        pykinect.initialize_libraries(track_body=False)
-        
-        print(f'MoCap v2.0 - Azure Kinect DK')
-        
-        # Try to detect available devices
-        device_count = 1  # Assume 1 device for now since detection is unreliable
-        print(f'Number of Kinect devices detected: {device_count}')
-        
-        # Check if devices are available
-        if device_count == 0:
-            print('No Kinect devices detected!')
-            input('Press Enter to exit...')
-            sys.exit(0)
-            return False
-        
-        if device_count < 2:
-            print('Warning: Only one Kinect device detected. Dual camera setup requires at least 2 devices.')
-            print('Continuing with single device for testing...')
-        
-        # Start camera threads
-        camera1_display = threading.Thread(target=run_single_camera_azure, args=(0, 0, flipped, floor))
-        camera1_display.daemon = True
-        camera1_display.start()
-        
-        camera2_display = None
-        if device_count >= 2:
-            camera2_display = threading.Thread(target=run_single_camera_azure, args=(1, 1, flipped, floor))
-            camera2_display.daemon = True
-            camera2_display.start()
-
-        time.sleep(8)  # Allow cameras to initialize
-
-        # Main loop
-        while running.is_set():
-            time.sleep(0.5)
-            if auto:
-                take_photo.set()
-                time.sleep(0.5)
-                take_photo.clear()
-        
-        time.sleep(1)
-        print('Stopping cameras...')
-        
-        # Wait for threads to finish
-        camera1_display.join(timeout=2)
-        if camera2_display:
-            camera2_display.join(timeout=2)
-        
-        print('\nDone!')
-        return True
-        
-    except Exception as ex:
-        print(f'Error: {ex}')
+        print(f'Error initializing Kinect {device_id} for IR: {ex}')
         return False
 
 # Change this to your Ezviz H3C RTSP URL
 # Format: rtsp://admin:VERIFICATION_CODE@<IP>:<PORT>/h264
 CAMERA_STREAMS = [
-    "rtsp://admin:WOJWUD@192.168.1.112:554/h264",  # Camera 1
+    "rtsp://admin:WOJWUD@169.254.27.194:554/h264",  # Camera 1
     # Add more streams here if you have multiple Ezviz cameras
 ]
 
@@ -273,7 +240,9 @@ def acquire_and_display_images_ezviz(rtsp_url, cam_num, flipped=True, floor=Fals
     :param flipped: Whether to flip the image horizontally
     :param floor: Whether to save in tracking folder or captured_images folder
     """
-    global running, take_photo
+    global running
+    camera_event = get_camera_event(cam_num)
+    
     try:
         window_name = f'Ezviz H3C Feed - Cam{cam_num}'
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -286,6 +255,10 @@ def acquire_and_display_images_ezviz(rtsp_url, cam_num, flipped=True, floor=Fals
             print(f"Failed to open stream for camera {cam_num}")
             return False
 
+        # Set target size to match Azure Kinect (1280x720)
+        target_width = 1280
+        target_height = 720
+
         # Frame rate calculation variables
         frame_count = 0
         start_time = time.time()
@@ -294,9 +267,9 @@ def acquire_and_display_images_ezviz(rtsp_url, cam_num, flipped=True, floor=Fals
 
         # Create directories
         if floor:
-            os.makedirs(f'macro_for_cam_SDKs/Ezviz_H3C_cam/tracking/cam{cam_num}', exist_ok=True)
+            os.makedirs(f'macro_for_cam_SDKs/Kinect_x_EZVIZ/tracking/cam{cam_num}', exist_ok=True)
         else:
-            os.makedirs(f'macro_for_cam_SDKs/Ezviz_H3C_cam/captured_images/cam{cam_num}', exist_ok=True)
+            os.makedirs(f'macro_for_cam_SDKs/Kinect_x_EZVIZ/captured_images/cam{cam_num}', exist_ok=True)
 
         while running.is_set():
             ret, frame = cap.read()
@@ -304,6 +277,9 @@ def acquire_and_display_images_ezviz(rtsp_url, cam_num, flipped=True, floor=Fals
                 print(f"Camera {cam_num}: No frame received")
                 time.sleep(0.1)
                 continue
+
+            # Resize to match Azure Kinect
+            frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
 
             # Flip if requested
             if flipped:
@@ -331,19 +307,17 @@ def acquire_and_display_images_ezviz(rtsp_url, cam_num, flipped=True, floor=Fals
                 running.clear()
                 break
             elif key == ord('s'):  # save photo
-                take_photo.set()
+                trigger_all_cameras()  # Trigger all cameras
 
-            # Save photo if triggered
-            if take_photo.is_set():
+            # Save photo if triggered for this camera - MOVED INSIDE THE LOOP
+            if camera_event.is_set():
                 print(f'Taking photo... cam{cam_num}')
                 if floor:
-                    image_name = f'macro_for_cam_SDKs/Ezviz_H3C_cam/tracking/cam{cam_num}/{int(time.time())}.png'
+                    image_name = f'macro_for_cam_SDKs/Kinect_x_EZVIZ/tracking/cam{cam_num}/{int(time.time())}.png'
                 else:
-                    image_name = f'macro_for_cam_SDKs/Ezviz_H3C_cam/captured_images/cam{cam_num}/{int(time.time())}.png'
+                    image_name = f'macro_for_cam_SDKs/Kinect_x_EZVIZ/captured_images/cam{cam_num}/{int(time.time())}.png'
                 cv2.imwrite(image_name, frame)
-                take_photo.clear()
-
-            time.sleep(0.001)
+                camera_event.clear()  # Clear only this camera's event
 
         cap.release()
         cv2.destroyWindow(window_name)
@@ -356,7 +330,7 @@ def acquire_and_display_images_ezviz(rtsp_url, cam_num, flipped=True, floor=Fals
     return True
 
 
-def run_single_camera_ezviz(rtsp_url, cam_num=0, flipped=True, floor=True):
+def run_single_camera_ezviz(rtsp_url, cam_num=1, flipped=True, floor=True):
     """Initialize and run a single Ezviz camera feed"""
     try:
         result = acquire_and_display_images_ezviz(rtsp_url, cam_num, flipped, floor)
@@ -393,9 +367,8 @@ def main_ezviz(auto=False, floor=False, flipped=True):
         while running.is_set():
             time.sleep(0.5)
             if auto:
-                take_photo.set()
+                trigger_all_cameras()  # Trigger all cameras simultaneously
                 time.sleep(0.5)
-                take_photo.clear()
 
         print('Stopping cameras...')
         for t in threads:
@@ -424,7 +397,7 @@ def main_combined(auto=False, floor=False, flipped=True):
         # Start camera threads
         threads = []
         for idx, rtsp_url in enumerate(CAMERA_STREAMS):
-            t = threading.Thread(target=run_single_camera_ezviz, args=(rtsp_url, idx, flipped, floor))
+            t = threading.Thread(target=run_single_camera_ezviz, args=(rtsp_url, idx+1, flipped, floor))
             t.daemon = True
             t.start()
             threads.append(t)
@@ -468,10 +441,9 @@ def main_combined(auto=False, floor=False, flipped=True):
         while running.is_set():
             time.sleep(0.5)
             if auto:
-                take_photo.set()
+                trigger_all_cameras()  # Trigger all cameras simultaneously
                 time.sleep(0.5)
-                take_photo.clear()
-
+    
         print('Stopping cameras...')
         for t in threads:
             t.join(timeout=2)
