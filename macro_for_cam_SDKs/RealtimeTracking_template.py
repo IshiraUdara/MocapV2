@@ -37,18 +37,18 @@ camera_poses, camera_count = get_extrinsics("./jsons/after_floor_extrinsics.json
 
 def track_points_Azure(kinect, data_queue: queue.Queue, preview=False):
     """
-    Continuously acquires images from Azure Kinect DK and processes them.
+    Continuously acquires IR images from Azure Kinect DK and processes them.
     """
     global running
     try:
         device_serial_number = kinect.get_serialnum()
         print(f'Device serial number: {device_serial_number}')
         
-        window_name = f'Kinect Feed - {device_serial_number}'
+        window_name = f'Kinect IR - {device_serial_number}'
         if preview:
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         
-        print('Starting image acquisition...')
+        print('Starting IR image acquisition...')
         
         frame_count = 0
         start_time = time.time()
@@ -59,83 +59,79 @@ def track_points_Azure(kinect, data_queue: queue.Queue, preview=False):
                 capture = kinect.get_capture()
                 
                 if capture is not None:
-                    # Use the public API method to get color image
-                    color_image_handle = _k4a.k4a_capture_get_color_image(capture)
-                    if color_image_handle:
+                    # Get IR image handle
+                    ir_image_handle = _k4a.k4a_capture_get_ir_image(capture)
+                    if ir_image_handle:
                         try:
-                            # Get image properties first
-                            width = _k4a.k4a_image_get_width_pixels(color_image_handle)
-                            height = _k4a.k4a_image_get_height_pixels(color_image_handle)
-                            buffer_size = _k4a.k4a_image_get_size(color_image_handle)
+                            width = _k4a.k4a_image_get_width_pixels(ir_image_handle)
+                            height = _k4a.k4a_image_get_height_pixels(ir_image_handle)
+                            buffer_size = _k4a.k4a_image_get_size(ir_image_handle)
                             
-                            # Check if we have valid dimensions
                             if width > 0 and height > 0 and buffer_size > 0:
-                                # Convert to numpy array using the Image class
-                                color_image_result = Image(color_image_handle).to_numpy()
-
-                                # Check if the result is a tuple (success, array)
-                                if isinstance(color_image_result, tuple):
-                                    success, color_image = color_image_result
-                                    if not success or color_image is None:
-                                        print("Failed to convert image to numpy array")
-                                        _k4a.k4a_image_release(color_image_handle)
+                                ir_result = Image(ir_image_handle).to_numpy()
+                                if isinstance(ir_result, tuple):
+                                    success, ir_image = ir_result
+                                    if not success or ir_image is None:
+                                        print("Failed to convert IR image to numpy array")
+                                        _k4a.k4a_image_release(ir_image_handle)
                                         continue
                                 else:
-                                    color_image = color_image_result
+                                    ir_image = ir_result
                                 
-                                # Check if the result is actually a numpy array
-                                if isinstance(color_image, tuple):
-                                    print(f"Warning: Image conversion returned tuple: {color_image}")
-                                    _k4a.k4a_image_release(color_image_handle)
-                                    continue
-                                    
+                                # Convert 16-bit IR to 8-bit for processing/display
+                                if ir_image.dtype == np.uint16:
+                                    gray_image = (ir_image / 256).astype(np.uint8)
+                                else:
+                                    # already 8-bit
+                                    gray_image = ir_image.astype(np.uint8)
                             else:
-                                print(f"Invalid image dimensions: {width}x{height}, buffer size: {buffer_size}")
-                                _k4a.k4a_image_release(color_image_handle)
+                                print(f"Invalid IR image dimensions: {width}x{height}, buffer size: {buffer_size}")
+                                _k4a.k4a_image_release(ir_image_handle)
                                 continue
-                                
                         except Exception as img_ex:
-                            print(f"Error converting image: {img_ex}")
-                            _k4a.k4a_image_release(color_image_handle)
+                            print(f"Error converting IR image: {img_ex}")
+                            _k4a.k4a_image_release(ir_image_handle)
                             continue
                         finally:
-                            _k4a.k4a_image_release(color_image_handle)
+                            _k4a.k4a_image_release(ir_image_handle)
                     else:
+                        # no IR image in this capture
                         continue
                     
-                    if color_image is not None:
-                        # Convert from BGRA to BGR if needed
-                        if color_image.shape[2] == 4:  # BGRA
-                            color_image_bgr = cv2.cvtColor(color_image, cv2.COLOR_BGRA2BGR)
-                        else:  # Already BGR
-                            color_image_bgr = color_image
-                            
-                        gray_image = cv2.cvtColor(color_image_bgr, cv2.COLOR_BGR2GRAY)
-                        
+                    # Process grayscale IR image for dot detection
+                    try:
                         processed_image, detected_points = _find_dot(gray_image, print_location=True)
+                    except Exception as proc_ex:
+                        print(f"Dot detection error: {proc_ex}")
+                        continue
 
-                        try:
-                            if data_queue.full():
-                                data_queue.get_nowait()
-                            data_queue.put_nowait(detected_points)
-                        except queue.Full:
-                            print("Queue is full")
-                        
-                        frame_count += 1
-                        
-                        if preview:
-                            cv2.imshow(window_name, processed_image)
-                            if cv2.waitKey(1) & 0xFF == ord('q'):
-                                running.clear()
-                                break
+                    try:
+                        if data_queue.full():
+                            data_queue.get_nowait()
+                        data_queue.put_nowait(detected_points)
+                    except queue.Full:
+                        print("Queue is full")
+                    
+                    frame_count += 1
+                    
+                    if preview:
+                        # processed_image expected to be single-channel or BGR; ensure displayable
+                        if len(processed_image.shape) == 2:
+                            disp = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2BGR)
+                        else:
+                            disp = processed_image
+                        cv2.imshow(window_name, disp)
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            running.clear()
+                            break
                     
             except Exception as ex:
-                print(f'Error during capture: {ex}')
+                print(f'Error during IR capture: {ex}')
                 time.sleep(0.01)  # Small delay to prevent busy waiting
 
         if preview:
             cv2.destroyWindow(window_name)
-        print("Kinect feed stopped")
+        print("Kinect IR feed stopped")
         
     except Exception as ex:
         print(f'Error: {ex}')
@@ -151,8 +147,8 @@ def run_single_camera_Azure(device_id, data_queue):
         pykinect.initialize_libraries(track_body=False)
         
         device_config = pykinect.default_configuration
-        device_config.color_format = pykinect.K4A_IMAGE_FORMAT_COLOR_BGRA32
-        device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_1080P
+        #device_config.color_format = pykinect.K4A_IMAGE_FORMAT_COLOR_BGRA32
+        device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_OFF
         device_config.depth_mode = pykinect.K4A_DEPTH_MODE_NFOV_2X2BINNED
         device_config.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_30
 
@@ -171,7 +167,7 @@ def run_single_camera_Azure(device_id, data_queue):
 # Try variations if needed:
 # rtsp://admin:PASSWORD@192.168.x.x:554/h264
 # rtsp://admin:PASSWORD@192.168.x.x:554/Streaming/Channels/101
-RTSP_URL = "rtsp://admin:WOJWUD@192.168.1.112:554/h264"
+RTSP_URL = "rtsp://admin:WOJWUD@169.254.27.194:554/h264"
 
 
 def track_points_EZVIZ(rtsp_url, data_queue: queue.Queue, preview=False):
