@@ -54,7 +54,7 @@ MocapV2 is a Python-based motion-capture toolbox that uses computer-vision metho
 
 ## Setup (Windows)
 1. Create and activate a venv (from project root)
-   - ```PowerShell:
+   - PowerShell:
     ```PowerShell
      .\.venv\Scripts\Activate.ps1
     ```
