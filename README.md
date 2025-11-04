@@ -79,24 +79,125 @@ Notes:
   .\.venv\Scripts\python.exe -m pip install --force-reinstall --no-cache-dir comtypes
 
 ## Quick run examples
+
 - FLIR realtime tracking (requires PySpin + camera):
+```
   .\.venv\Scripts\Activate.ps1
   python main\RealtimeTracking_FLIR.py
-
+```
 - Kinect DK realtime / capture (requires Kinect SDK + pykinect2):
+```
   python main\Kinect_DK_cam\RealtimeTracking_Kinect_DK.py
-
+```
 - Run IMU EKF demo:
+```
   python main\IMU_EKF\Main.py
-
+```
 - Capture images for calibration (example):
+```
   python main\TakePhotos_dual-Extrinsics.py
+```
   Captured images saved under main\captured_images\cam0 and cam1 (or camera-specific subfolders).
 
 - Unity integration example (local messaging):
+```
   python main\unity_communication\ToUnity.py
   python main\Unity_Simulation\Unity_livecamera_feed.py
+```
+## Terminal command examples
 
+PowerShell (recommended on Windows)
+```powershell
+# From project root
+# Activate venv (PowerShell)
+.\.venv\Scripts\Activate.ps1
+
+# Upgrade packaging tools
+python -m pip install --upgrade pip setuptools wheel
+
+# Check dependency status
+python main\requirements.py
+
+# Attempt to install missing pip-packages
+python main\requirements.py --install
+
+# Write pinned requirements.txt
+python main\requirements.py --write --output requirements.txt
+
+# Install from generated requirements.txt
+python -m pip install -r requirements.txt
+
+# Run common scripts (example)
+python main\RealtimeTracking_FLIR.py      # FLIR (PySpin) realtime
+python main\Kinect_DK_cam\RealtimeTracking_Kinect_DK.py  # Kinect DK
+python main\IMU_EKF\Main.py               # IMU EKF demo
+python main\TakePhotos_dual-Extrinsics.py # capture for calibration
+
+# Reinstall comtypes if you edited site-packages or see Python2->3 errors
+python -m pip install --force-reinstall --no-cache-dir comtypes
+```
+
+Command Prompt (cmd.exe)
+```bat
+:: From project root
+:: Activate venv (cmd)
+.\.venv\Scripts\activate.bat
+
+:: Upgrade packaging tools
+python -m pip install --upgrade pip setuptools wheel
+
+:: Check dependency status
+python main\requirements.py
+
+:: Install missing pip-packages
+python main\requirements.py --install
+
+:: Write requirements.txt
+python main\requirements.py --write --output requirements.txt
+
+:: Install from requirements
+python -m pip install -r requirements.txt
+
+:: Run examples
+python main\RealtimeTracking_FLIR.py
+python main\Kinect_DK_cam\RealtimeTracking_Kinect_DK.py
+python main\IMU_EKF\Main.py
+python main\TakePhotos_dual-Extrinsics.py
+
+:: Reinstall comtypes if needed
+python -m pip install --force-reinstall --no-cache-dir comtypes
+```
+
+Git Bash / WSL (or other POSIX shells)
+```bash
+# From project root (use Windows Python from venv if on WSL/Git Bash you may need full path)
+# Activate venv (Git Bash may use the activate script)
+source ./.venv/Scripts/activate
+
+# Upgrade packaging tools
+python -m pip install --upgrade pip setuptools wheel
+
+# Check dependencies
+python main/requirements.py
+
+# Install missing pip-packages
+python main/requirements.py --install
+
+# Write requirements
+python main/requirements.py --write --output requirements.txt
+
+# Install from requirements
+python -m pip install -r requirements.txt
+
+# Run examples (paths use forward slashes)
+python main/RealtimeTracking_FLIR.py
+python main/Kinect_DK_cam/RealtimeTracking_Kinect_DK.py
+python main/IMU_EKF/Main.py
+python main/TakePhotos_dual-Extrinsics.py
+
+# Reinstall comtypes (Windows venv Python)
+python -m pip install --force-reinstall --no-cache-dir comtypes
+```
 ## Blender and Unity / Unreal
 - Blender scripts require running inside Blender or using Blender's Python executable. See blender_scripts/*.py.
 - with_unreal/ contains BEN2 model integration; follow its README and with_unreal/ben2/requirements.txt for model-specific deps.
@@ -116,6 +217,8 @@ Notes:
 
 ## License
 This project is licensed under the MIT Personal Use License. See [LICENSE](LICENSE) for the full text.
+
+
 
 
 
