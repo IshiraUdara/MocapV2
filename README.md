@@ -1,124 +1,122 @@
-# MocapV2 - Computer Vision Motion Capture
+# MocapV2 — Computer Vision Motion Capture
 
-![License: MIT Personal Use](https://img.shields.io/badge/License-MIT%20Personal%20Use-blue.svg)
+[![License: MIT Personal Use](https://img.shields.io/badge/License-MIT%20Personal%20Use-blue.svg)](LICENSE)
 
-MocapV2 is a Python-based motion capture system that utilizes computer vision techniques, primarily leveraging OpenCV, to detect and track infrared (IR) markers attached to objects in real-time.
+MocapV2 is a Python-based motion-capture toolbox that uses computer-vision methods (OpenCV + NumPy) to detect and track IR markers and cameras. It includes camera SDK integrations (FLIR / Spinnaker, Kinect DK), IMU EKF processing, and utilities to stream or export poses to Unity, Unreal and Blender.
 
 ## Table of Contents
-
-- [Overview](#overview)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Installation](#installation)
-- [Usage](#usage)
+- [Key features](#key-features)
+- [Repo layout (important folders)](#repo-layout-important-folders)
+- [Prerequisites and vendor SDKs](#prerequisites-and-vendor-sdks)
+- [Setup (Windows)](#setup-windows)
+- [Quick run examples](#quick-run-examples)
+- [Blender and Unity / Unreal](#blender-and-unity--unreal)
+- [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
-- [Acknowledgements](#acknowledgements)
+- [License file](LICENSE)
 
-## Overview
+## Key features
+- Real-time marker detection and tracking (OpenCV)
+- Support for multiple camera backends:
+  - FLIR / Spinnaker (PySpin / PySpin SDK)
+  - Kinect DK (pykinect2 + Kinect SDK)
+  - Generic camera SDK macros and USB cameras
+- IMU EKF for orientation/position fusion (IMU_EKF/)
+- Integration examples for Unity and Unreal (Unity_Simulation/, with_unreal/)
+- Blender scripts to place and extract camera/point data (blender_scripts/)
+- Utilities to capture images, run calibration, solve camera intrinsics / extrinsics, and compute object poses
+- Project helper script to generate / install Python requirements (main/requirements.py)
 
-MocapV2 aims to provide an accessible motion capture solution using readily available hardware, such as standard webcams. The system analyzes video input frame by frame, identifies IR markers, and estimates their 3D positions.
+## Repo layout (important folders)
+- main/ — core scripts and GUI:
+  - TakePhotos_*.py, RealtimeTracking_*.py, CapturePoints.py
+  - RealtimeTracking_FLIR.py, Kinect_DK_cam/ (Kinect-specific scripts)
+  - IMU_EKF/ — EKF, kalman and IMU processing
+  - blender_scripts/ — Blender helpers (require Blender Python)
+  - Unity_Simulation/ — Unity integration examples
+  - unity_communication/ — small helpers for Unity IPC
+  - macro_for_cam_SDKs/ — macros and templates for camera SDKs
+  - lib/ — helper modules (CudaOperations.py, ImageOperations.py, Helpers.py)
+  - captured_images/, floor_images/, checkerboard/ — example data and outputs
+- with_unreal/ — BEN2/Unreal integration code and dependencies
+- environment.yml, main/requirements.py — environment / requirements helpers
 
-Originally developed for tracking studio cameras, MocapV2 can also be used for general motion capture applications. The modular architecture facilitates easy extension and integration into larger projects.
+## Prerequisites and vendor SDKs
+- Python 3.8+ recommended (project tested on Windows)
+- pip, venv or conda for isolated environments
+- Hardware/vendor SDKs (not pip-installable):
+  - FLIR Spinnaker / PySpin — install from FLIR/Teledyne downloads
+  - Kinect for Windows SDK + pykinect2 — pykinect2 may require manual install/build
+  - Blender's `bpy` — use Blender's bundled Python to run blender_scripts
+  - CUDA / CuPy — GPU packages require matching CUDA toolkit and specific wheels
+- Windows-specific: comtypes is required for Kinect / COM wrappers
 
-## Features
+## Setup (Windows)
+1. Create and activate a venv (from project root)
+   - PowerShell:
+     .\.venv\Scripts\Activate.ps1
+   - Command Prompt:
+     .\.venv\Scripts\activate.bat
 
-- **Real-time Tracking:** Detects and tracks IR markers from a video stream.
-- **OpenCV Integration:** Uses OpenCV for video capture, image processing, and tracking.
-- **Visual Feedback:** The GUI displays camera feeds and allows real-time parameter adjustments.
-- **Realtime Socket Communication:** The calculated object transformations can be transmitted via sockets, enabling integration with applications like Unity 3D, Unreal Engine, and Blender.
-- **Modular Codebase:** Organized structure for ease of development and scalability.
+2. Upgrade packaging tools:
+   python -m pip install --upgrade pip setuptools wheel
 
-## Tech Stack
+3. Use the helper to inspect / write requirements:
+   - Print status:
+     python main\requirements.py
+   - Generate requirements.txt (pinned versions when available):
+     python main\requirements.py --write --output requirements.txt
+   - Attempt pip install missing pip-installable packages:
+     python main\requirements.py --install
 
-- **Language:** Python 3.x
-- **Core Libraries:**
-  - OpenCV (opencv-python) - Video capture, image processing, and display.
-  - NumPy - Efficient numerical computations.
+4. If you created requirements.txt:
+   python -m pip install -r requirements.txt
 
-## Installation
+Notes:
+- Manual SDKs listed as "manual" in requirements.py must be installed separately.
+- If you encounter Python-2 idioms in comtypes (SyntaxError / 'unicode' NameError), undo manual edits and reinstall comtypes inside the venv:
+  .\.venv\Scripts\python.exe -m pip install --force-reinstall --no-cache-dir comtypes
 
-Follow these steps to set up the project:
+## Quick run examples
+- FLIR realtime tracking (requires PySpin + camera):
+  .\.venv\Scripts\Activate.ps1
+  python main\RealtimeTracking_FLIR.py
 
-### 1. Clone the Repository
-```bash
-git clone https://github.com/RashmikaDushan/MocapV2.git
-cd MocapV2
-```
+- Kinect DK realtime / capture (requires Kinect SDK + pykinect2):
+  python main\Kinect_DK_cam\RealtimeTracking_Kinect_DK.py
 
-### 2. Create a Virtual Environment (Recommended)
+- Run IMU EKF demo:
+  python main\IMU_EKF\Main.py
 
-Using `venv`:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+- Capture images for calibration (example):
+  python main\TakePhotos_dual-Extrinsics.py
+  Captured images saved under main\captured_images\cam0 and cam1 (or camera-specific subfolders).
 
-Using `conda`:
-```bash
-conda create -n mocapv2 python=3.9  # Adjust Python version if needed
-conda activate mocapv2
-```
+- Unity integration example (local messaging):
+  python main\unity_communication\ToUnity.py
+  python main\Unity_Simulation\Unity_livecamera_feed.py
 
-### 3. Install Dependencies
-```bash
-pip install opencv-python numpy
-```
+## Blender and Unity / Unreal
+- Blender scripts require running inside Blender or using Blender's Python executable. See blender_scripts/*.py.
+- with_unreal/ contains BEN2 model integration; follow its README and with_unreal/ben2/requirements.txt for model-specific deps.
+- Unity_Simulation folder contains Unity import/export helpers — Unity side expects UDP/socket messages or file-based textures.
 
-**Note:** Depending on your OS and Python version, OpenCV might require additional system dependencies.
-
-## Usage
-
-To run the real-time motion capture demo:
-
-1. Ensure that at least two webcams are connected and accessible.
-2. Navigate to the project's root directory:
-   ```bash
-   cd MocapV2
-   ```
-3. Activate the virtual environment (if not already activated).
-4. Run the main application script:
-   ```bash
-   python app.py
-   ```
-
-A window will open, displaying the webcam feed with settings in real-time. Press `Esc` to close the program.
+## Troubleshooting
+- Confirm you are using the project's venv: python -c "import sys; print(sys.executable)"
+- comtypes / pykinect2 errors:
+  - Reinstall comtypes in the active venv: python -m pip install --force-reinstall comtypes
+  - pykinect2 may not be on PyPI; follow its GitHub install instructions or ensure Kinect SDK is installed.
+- If OpenCV is missing, install opencv-python; if you need contrib modules, install opencv-contrib-python.
+- GPU packages (numba/cupy/cuda) must match your CUDA toolkit and GPU drivers.
 
 ## Contributing
-
-Contributions are welcome! To contribute:
-
-1. Fork the repository on GitHub.
-2. Clone your fork:
-   ```bash
-   git clone https://github.com/YourUsername/MocapV2.git
-   ```
-3. Create a new branch:
-   ```bash
-   git checkout -b feature/your-feature-name  # or bugfix/issue-description
-   ```
-4. Make changes and commit:
-   ```bash
-   git commit -am 'Add feature X'
-   ```
-5. Push changes:
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-6. Open a Pull Request (PR) on the original repository.
-
-Ensure your code follows best practices and update documentation if needed. You can also report bugs or suggest features by opening an issue on GitHub.
+- Create a branch, add tests if applicable, and open a PR. Keep changes modular (e.g., add camera backend under macro_for_cam_SDKs or new subfolder).
+- Update main/requirements.py when adding new Python dependencies.
 
 ## License
+This project is licensed under the MIT Personal Use License. See [LICENSE](LICENSE) for the full text.
 
-This project is licensed under the **MIT Personal Use License**.
 
-You may use and modify this software for **personal, non-commercial purposes only**.
 
-For full details, refer to the [LICENSE](LICENSE) file.
-
-## Acknowledgements
-
-- Inspired by [jyjblrd/Low-Cost-Mocap](https://github.com/jyjblrd/Low-Cost-Mocap.git), with portions of the code adapted from it.
-- Built using [OpenCV](https://opencv.org/) for essential computer vision tasks.
 
