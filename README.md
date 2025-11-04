@@ -54,29 +54,45 @@ MocapV2 is a Python-based motion-capture toolbox that uses computer-vision metho
 
 ## Setup (Windows)
 1. Create and activate a venv (from project root)
-   - PowerShell:
+   - ```PowerShell:
+    ```PowerShell
      .\.venv\Scripts\Activate.ps1
+    ```
    - Command Prompt:
+    ```bat
      .\.venv\Scripts\activate.bat
+     ```
 
 2. Upgrade packaging tools:
+  ```PowerShell
    python -m pip install --upgrade pip setuptools wheel
+  ```
 
 3. Use the helper to inspect / write requirements:
    - Print status:
+    ```PowerShell
      python main\requirements.py
+    ```
    - Generate requirements.txt (pinned versions when available):
+    ```PowerShell
      python main\requirements.py --write --output requirements.txt
+    ```
    - Attempt pip install missing pip-installable packages:
+    ```PowerShell
      python main\requirements.py --install
+    ```
 
 4. If you created requirements.txt:
+  ```PowerShell
    python -m pip install -r requirements.txt
+  ```
 
 Notes:
 - Manual SDKs listed as "manual" in requirements.py must be installed separately.
 - If you encounter Python-2 idioms in comtypes (SyntaxError / 'unicode' NameError), undo manual edits and reinstall comtypes inside the venv:
+```PowerShell
   .\.venv\Scripts\python.exe -m pip install --force-reinstall --no-cache-dir comtypes
+```
 
 ## Quick run examples
 
