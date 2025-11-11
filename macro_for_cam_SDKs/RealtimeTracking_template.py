@@ -1,363 +1,356 @@
 import sys
 import os
 
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import time
 import threading
-import cv2
-import pykinect_azure as pykinect
-from pykinect_azure.k4a import *
-from pykinect_azure.k4a import _k4a
-from lib.Helpers import find_point_correspondance_and_object_points, get_extrinsics
 import queue
 import socket
 import msgpack
 
+import cv2
 import numpy as np
-import mmap
+import pykinect_azure as pykinect
+from pykinect_azure.k4a import Image, _k4a
 
-# Try to import with CUDA, fallback to CPU if needed
-use_cuda = False
+from lib.Helpers import find_point_correspondance_and_object_points, get_extrinsics
+from lib.ImageOperations import _find_dot
 
+# Optional Kinect v2 (Kinect for Xbox One) support
 try:
-    from lib.ImageOperations import _find_dot
-    use_cuda = True
-    print("Using CUDA-accelerated dot detection")
-except Exception as cuda_error:
-    print(f"CUDA error: {cuda_error}")
-    print("Falling back to CPU-only mode...")
-    use_cuda = False
+    from pykinect2 import PyKinectRuntime, PyKinectV2
+except Exception:
+    PyKinectRuntime = None
+    PyKinectV2 = None
 
 running = threading.Event()
 running.set()
 
 camera_poses, camera_count = get_extrinsics("./jsons/after_floor_extrinsics.json")
 
-def track_points_Azure(kinect, data_queue: queue.Queue, preview=False):
-    """
-    Continuously acquires IR images from Azure Kinect DK and processes them.
-    """
-    global running
+# Lightweight queues to pass detections (keep only latest)
+data_queue_azure = queue.Queue(maxsize=4)
+data_queue_kv2 = queue.Queue(maxsize=4)
+
+
+def _drain_latest(q):
+    """Return the newest item from queue or None if empty."""
+    item = None
     try:
-        device_serial_number = kinect.get_serialnum()
-        print(f'Device serial number: {device_serial_number}')
-        
-        window_name = f'Kinect IR - {device_serial_number}'
+        while True:
+            item = q.get_nowait()
+    except queue.Empty:
+        return item
+
+
+def track_points_azure(kinect, out_queue: queue.Queue, preview=False):
+    """Acquire IR from Azure Kinect DK, detect dots and push detections (list of [x,y])."""
+    try:
+        serial = kinect.get_serialnum()
+        win = f'Azure IR - {serial}'
         if preview:
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        
-        print('Starting IR image acquisition...')
-        
-        frame_count = 0
-        start_time = time.time()
-        time.sleep(1)  # Allow camera to stabilize
-        
+            cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+
+        time.sleep(1.0)
         while running.is_set():
             try:
                 capture = kinect.get_capture()
-                
-                if capture is not None:
-                    # Get IR image handle
-                    ir_image_handle = _k4a.k4a_capture_get_ir_image(capture)
-                    if ir_image_handle:
-                        try:
-                            width = _k4a.k4a_image_get_width_pixels(ir_image_handle)
-                            height = _k4a.k4a_image_get_height_pixels(ir_image_handle)
-                            buffer_size = _k4a.k4a_image_get_size(ir_image_handle)
-                            
-                            if width > 0 and height > 0 and buffer_size > 0:
-                                ir_result = Image(ir_image_handle).to_numpy()
-                                if isinstance(ir_result, tuple):
-                                    success, ir_image = ir_result
-                                    if not success or ir_image is None:
-                                        print("Failed to convert IR image to numpy array")
-                                        _k4a.k4a_image_release(ir_image_handle)
-                                        continue
-                                else:
-                                    ir_image = ir_result
-                                
-                                # Convert 16-bit IR to 8-bit for processing/display
-                                if ir_image.dtype == np.uint16:
-                                    gray_image = (ir_image / 256).astype(np.uint8)
-                                else:
-                                    # already 8-bit
-                                    gray_image = ir_image.astype(np.uint8)
-                            else:
-                                print(f"Invalid IR image dimensions: {width}x{height}, buffer size: {buffer_size}")
-                                _k4a.k4a_image_release(ir_image_handle)
-                                continue
-                        except Exception as img_ex:
-                            print(f"Error converting IR image: {img_ex}")
-                            _k4a.k4a_image_release(ir_image_handle)
-                            continue
-                        finally:
-                            _k4a.k4a_image_release(ir_image_handle)
-                    else:
-                        # no IR image in this capture
-                        continue
-                    
-                    # Process grayscale IR image for dot detection
-                    try:
-                        processed_image, detected_points = _find_dot(gray_image, print_location=True)
-                    except Exception as proc_ex:
-                        print(f"Dot detection error: {proc_ex}")
+                if capture is None:
+                    time.sleep(0.001)
+                    continue
+
+                ir_handle = _k4a.k4a_capture_get_ir_image(capture.handle if hasattr(capture, 'handle') else capture)
+                if not ir_handle:
+                    continue
+
+                try:
+                    w = _k4a.k4a_image_get_width_pixels(ir_handle)
+                    h = _k4a.k4a_image_get_height_pixels(ir_handle)
+                    size = _k4a.k4a_image_get_size(ir_handle)
+                    if w <= 0 or h <= 0 or size <= 0:
                         continue
 
-                    try:
-                        if data_queue.full():
-                            data_queue.get_nowait()
-                        data_queue.put_nowait(detected_points)
-                    except queue.Full:
-                        print("Queue is full")
-                    
-                    frame_count += 1
-                    
-                    if preview:
-                        # processed_image expected to be single-channel or BGR; ensure displayable
-                        if len(processed_image.shape) == 2:
-                            disp = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2BGR)
-                        else:
-                            disp = processed_image
-                        cv2.imshow(window_name, disp)
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            running.clear()
-                            break
-                    
-            except Exception as ex:
-                print(f'Error during IR capture: {ex}')
-                time.sleep(0.01)  # Small delay to prevent busy waiting
+                    arr = Image(ir_handle).to_numpy()
+                    ir_image = arr if not isinstance(arr, tuple) else arr[1]
+                    if ir_image is None:
+                        continue
 
-        if preview:
-            cv2.destroyWindow(window_name)
-        print("Kinect IR feed stopped")
-        
-    except Exception as ex:
-        print(f'Error: {ex}')
-        return False
-        
-    return True
+                    gray = (ir_image >> 8).astype(np.uint8) if ir_image.dtype == np.uint16 else ir_image.astype(np.uint8)
 
-def run_single_camera_Azure(device_id, data_queue):
-    """
-    Initialize and run a single Kinect device.
-    """
-    try:
-        pykinect.initialize_libraries(track_body=False)
-        
-        device_config = pykinect.default_configuration
-        #device_config.color_format = pykinect.K4A_IMAGE_FORMAT_COLOR_BGRA32
-        device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_OFF
-        device_config.depth_mode = pykinect.K4A_DEPTH_MODE_NFOV_2X2BINNED
-        device_config.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_30
+                finally:
+                    _k4a.k4a_image_release(ir_handle)
 
-        kinect = pykinect.start_device(config=device_config)
-        print(f'Kinect {device_id} initialized successfully')
-        
-        result = track_points_Azure(kinect, data_queue, preview=True)
-        
-        return result
-        
-    except Exception as ex:
-        print(f'Error initializing Kinect {device_id}: {ex}')
-        return False
+                processed, detected = _find_dot(gray, print_location=False)
+                # push latest
+                try:
+                    if out_queue.full():
+                        out_queue.get_nowait()
+                    out_queue.put_nowait(detected)
+                except queue.Full:
+                    pass
 
-# ⚠️ Update with your correct RTSP URL
-# Try variations if needed:
-# rtsp://admin:PASSWORD@192.168.x.x:554/h264
-# rtsp://admin:PASSWORD@192.168.x.x:554/Streaming/Channels/101
-RTSP_URL = "rtsp://admin:WOJWUD@169.254.27.194:554/h264"
+                if preview:
+                    disp = processed if processed.ndim == 3 else cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
+                    cv2.imshow(win, disp)
+                    if cv2.waitKey(1) & 0xFF == 27:
+                        running.clear()
+                        break
 
-
-def track_points_EZVIZ(rtsp_url, data_queue: queue.Queue, preview=False):
-    """
-    Continuously acquires images from EZVIZ H3C via RTSP and processes them.
-    """
-    global running
-    try:
-        cap = cv2.VideoCapture(rtsp_url)
-        if not cap.isOpened():
-            print("❌ Failed to open EZVIZ RTSP stream")
-            return False
-
-        window_name = f"EZVIZ H3C Feed"
-        if preview:
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-
-        print("Starting EZVIZ image acquisition...")
-
-        frame_count = 0
-        start_time = time.time()
-        time.sleep(1)  # Allow camera to stabilize
-
-        while running.is_set():
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                print("⚠️ No frame received from EZVIZ camera")
-                time.sleep(0.05)
+            except Exception as e:
+                print(f"Azure loop error: {e}")
+                time.sleep(0.01)
                 continue
 
-            gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-            processed_image, detected_points = _find_dot(gray_image, print_location=True)
-
-            try:
-                if data_queue.full():
-                    data_queue.get_nowait()
-                data_queue.put_nowait(detected_points)
-            except queue.Full:
-                print("Queue is full")
-
-            frame_count += 1
-
-            if preview:
-                cv2.imshow(window_name, processed_image)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    running.clear()
-                    break
-
-        cap.release()
         if preview:
-            cv2.destroyWindow(window_name)
-        print("EZVIZ feed stopped")
+            cv2.destroyWindow(win)
+        return True
 
-    except Exception as ex:
-        print(f"Error: {ex}")
+    except Exception as e:
+        print(f"Azure tracker error: {e}")
         return False
 
-    return True
+
+def track_points_kinect_v2(kinect_runtime, out_queue: queue.Queue, preview=False):
+    """Acquire IR from Kinect v2 runtime, detect dots and push detections."""
+    if PyKinectRuntime is None or PyKinectV2 is None:
+        print("PyKinect2 not available; Kinect v2 disabled.")
+        return False
+
+    try:
+        win = 'Kinect v2 IR'
+        if preview:
+            cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+
+        # try to read frame descriptor
+        try:
+            ir_desc = kinect_runtime.infrared_frame_desc
+            h, w = ir_desc.Height, ir_desc.Width
+        except Exception:
+            h, w = 424, 512
+
+        time.sleep(1.0)
+        while running.is_set():
+            try:
+                ir_frame = kinect_runtime.get_last_infrared_frame()
+                if ir_frame is None:
+                    time.sleep(0.001)
+                    continue
+
+                try:
+                    ir_image = np.array(ir_frame, dtype=np.uint16).reshape((h, w))
+                except Exception:
+                    ir_image = ir_frame.reshape((h, w)).astype(np.uint16)
+
+                gray = (ir_image >> 8).astype(np.uint8)
+
+                processed, detected = _find_dot(gray, print_location=False)
+                try:
+                    if out_queue.full():
+                        out_queue.get_nowait()
+                    out_queue.put_nowait(detected)
+                except queue.Full:
+                    pass
+
+                if preview:
+                    disp = processed if processed.ndim == 3 else cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
+                    cv2.imshow(win, disp)
+                    if cv2.waitKey(1) & 0xFF == 27:
+                        running.clear()
+                        break
+
+            except Exception as e:
+                print(f"Kinect v2 loop error: {e}")
+                time.sleep(0.01)
+                continue
+
+        if preview:
+            cv2.destroyWindow(win)
+        return True
+
+    except Exception as e:
+        print(f"Kinect v2 tracker error: {e}")
+        return False
 
 
-def track(data_queue_Azure: queue.Queue, data_queue_EZVIZ: queue.Queue, stream=True):
-    """
-    Process points from 1 or 2 EZVIZ cameras and send to Unity if enabled.
-    """
+def _select_best_3d_point(points3d, cluster_threshold=0.06):
+    """Cluster candidate 3D points and return centroid of largest cluster."""
+    if not points3d:
+        return None
+    pts = np.array(points3d, dtype=np.float32)
+    if pts.shape[0] == 1:
+        return pts[0].tolist()
+    d = np.linalg.norm(pts[:, None, :] - pts[None, :, :], axis=2)
+    N = pts.shape[0]
+    visited = np.zeros(N, dtype=bool)
+    clusters = []
+    for i in range(N):
+        if visited[i]:
+            continue
+        stack = [i]
+        comp = []
+        visited[i] = True
+        while stack:
+            j = stack.pop()
+            comp.append(j)
+            neigh = np.where(d[j] < cluster_threshold)[0]
+            for n in neigh:
+                if not visited[n]:
+                    visited[n] = True
+                    stack.append(n)
+        clusters.append(comp)
+    clusters.sort(key=lambda c: len(c), reverse=True)
+    best = clusters[0]
+    centroid = pts[best].mean(axis=0)
+    return centroid.tolist()
+
+
+def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True):
+    """Fuse detections from both cameras, triangulate and send best single 3D point."""
     global camera_poses
-    print(camera_poses)
-    print("Tracking started")
-
+    print("Fused tracking started")
     if stream:
         HOST = "127.0.0.1"
         PORT = 5002
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((HOST, PORT))
         server.listen(1)
         print("Waiting for Unity to connect...")
-        connection, _ = server.accept()
-        print("Connected!")
+        conn, _ = server.accept()
+        print("Connected to Unity")
+    else:
+        conn = None
 
-    point = [0, 0, 0, 0, 0, 0, 0, 0]
-    fps = 0
-    old_time = time.time()
-
+    best_point = [0] * 8
+    old = time.time()
     while running.is_set():
-        fps = time.time() - old_time
-        old_time = time.time()
-        fps = 1 / fps if fps > 0 else 0
-
         try:
-            if not (data_queue_Azure.empty() or data_queue_EZVIZ.empty()):
-                data1 = data_queue_Azure.get_nowait()
-                data2 = data_queue_EZVIZ.get_nowait()
-                image_points = [data1, data2]
-                object_points, image_p = find_point_correspondance_and_object_points(
-                    image_points, camera_poses, 4
-                )
+            # get newest detections
+            azure_pts = _drain_latest(out_queue_azure)
+            kv2_pts = _drain_latest(out_queue_kv2)
 
-                if stream:
-                    if len(object_points) > 0:
-                        point = object_points[0]
-                        point = list(point)
-                        point = [0, 0, 0, 0] + point
-                    data = {"tracker1": point}
-                    try:
-                        connection.send(msgpack.packb(data, use_bin_type=True))
-                        print(f"Object Points: {point}")
-                    except (ConnectionResetError, BrokenPipeError):
-                        print("\nUnity disconnected, waiting for reconnection...")
-                        connection, _ = server.accept()
-                        print("Connected!")
-                        continue
-                else:
-                    print(f"Object Points: {object_points}")
-                print(f"Image Points: {image_p}")
-                print(f"FPS: {fps:.2f}")
+            if azure_pts is None and kv2_pts is None:
+                time.sleep(0.005)
+                continue
 
-        except queue.Empty:
+            image_points = []
+            image_points.append(azure_pts if azure_pts is not None else [])
+            image_points.append(kv2_pts if kv2_pts is not None else [])
+
+            # triangulate / find correspondences
+            object_points, image_p = find_point_correspondance_and_object_points(image_points, camera_poses, 4)
+
+            best3d = None
+            if object_points and len(object_points) > 0:
+                best3d = _select_best_3d_point(object_points, cluster_threshold=0.06)
+
+            if best3d is not None and np.all(np.isfinite(best3d)):
+                best_point = [0, 0, 0, 0, float(best3d[0]), float(best3d[1]), float(best3d[2]), 0]
+            else:
+                best_point = [0, 0, 0, 0, 0, 0, 0, 0]
+
+            data = {"tracker1": best_point}
+            if stream:
+                try:
+                    conn.send(msgpack.packb(data, use_bin_type=True))
+                except (BrokenPipeError, ConnectionResetError):
+                    print("Unity disconnected, waiting...")
+                    conn, _ = server.accept()
+                    print("Reconnected")
+                    continue
+            else:
+                print("Fused:", best_point)
+
+            # small sleep to limit CPU
+            time.sleep(0.005)
+
+        except Exception as e:
+            print(f"Tracking error: {e}")
+            time.sleep(0.01)
+            continue
+
+    if stream and conn:
+        try:
+            conn.close()
+            server.close()
+        except Exception:
             pass
-        except Exception as ex:
-            print(f"Tracking error: {ex}")
-
-        time.sleep(0.01)
-
-
-def run_single_camera_EZVIZ(rtsp_url, data_queue):
-    """
-    Initialize and run a single EZVIZ H3C camera.
-    """
-    try:
-        print(f"Initializing EZVIZ camera: {rtsp_url}")
-        result = track_points_EZVIZ(rtsp_url, data_queue, preview=True)
-        return result
-    except Exception as ex:
-        print(f"Error initializing EZVIZ camera: {ex}")
-        return False
 
 
 def main():
-    """
-    Main entry point.
-    """
     global running
     try:
-        print("MoCap v2.0 - EZVIZ H3C")
+        print("MoCap fused tracking - Azure Kinect DK + Kinect v2")
 
+        # initialize Azure library
         pykinect.initialize_libraries(track_body=False)
-        print(f'MoCap v2.0 - Azure Kinect DK')
 
-        data_queue_Azure = queue.Queue(maxsize=10)
-        data_queue_EZVIZ = queue.Queue(maxsize=10)  # If you add a 2nd EZVIZ camera
+        # processing thread
+        proc = threading.Thread(target=track, args=(data_queue_azure, data_queue_kv2, True))
+        proc.daemon = True
+        proc.start()
 
-        process_thread = threading.Thread(target=track, args=(data_queue_Azure, data_queue_EZVIZ))
-        process_thread.daemon = True
-        process_thread.start()
+        # start Azure thread
+        def azure_runner():
+            try:
+                cfg = pykinect.default_configuration
+                cfg.color_resolution = pykinect.K4A_COLOR_RESOLUTION_OFF
+                cfg.depth_mode = pykinect.K4A_DEPTH_MODE_NFOV_2X2BINNED
+                cfg.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_30
+                k = pykinect.start_device(config=cfg)
+                track_points_azure(k, data_queue_azure, preview=True)
+            except Exception as e:
+                print(f"Azure init error: {e}")
 
-        EZVIZ_camera_thread = threading.Thread(target=run_single_camera_EZVIZ, args=(RTSP_URL, data_queue_EZVIZ))
-        EZVIZ_camera_thread.daemon = True
-        EZVIZ_camera_thread.start()
+        t_azure = threading.Thread(target=azure_runner, daemon=True)
+        t_azure.start()
 
-        Azure_camera_thread = threading.Thread(target=run_single_camera_Azure, args=(0, data_queue_Azure))
-        Azure_camera_thread.daemon = True
-        Azure_camera_thread.start()
+        # start Kinect v2 thread
+        t_kv2 = None
+        if PyKinectRuntime is not None:
+            def kv2_runner():
+                try:
+                    k2 = PyKinectRuntime.PyKinectRuntime(PyKinectV2.FrameSourceTypes_Infrared)
+                    track_points_kinect_v2(k2, data_queue_kv2, preview=True)
+                    try:
+                        k2.close()
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"Kinect v2 init error: {e}")
 
+            t_kv2 = threading.Thread(target=kv2_runner, daemon=True)
+            t_kv2.start()
+        else:
+            print("PyKinect2 not available; Kinect v2 thread not started.")
+
+        # main loop waits for interrupt
         try:
             while running.is_set():
                 time.sleep(0.1)
         except KeyboardInterrupt:
-            print("\nKeyboard interrupt received. Stopping...")
             running.clear()
 
-        print("Stopping cameras...")
-        EZVIZ_camera_thread.join(timeout=2)
-        Azure_camera_thread.join(timeout=2)
-
-        print("\nDone!")
+        # join threads
+        t_azure.join(timeout=2)
+        if t_kv2:
+            t_kv2.join(timeout=2)
+        proc.join(timeout=2)
         return True
 
-    except Exception as ex:
-        print(f"Error: {ex}")
+    except Exception as e:
+        print(f"Main error: {e}")
         return False
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     try:
-        success = main()
-        print('Exiting...')
-        sys.exit(0 if success else 1)
+        ok = main()
+        sys.exit(0 if ok else 1)
     except KeyboardInterrupt:
-        print("\nProgram interrupted by user")
         running.clear()
         sys.exit(0)
     except Exception as e:
-        print(f"Unexpected error: {e}")
+        print(f'Unexpected error: {e}')
         sys.exit(1)

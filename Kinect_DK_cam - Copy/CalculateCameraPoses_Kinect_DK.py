@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import cv2 as cv
 import numpy as np
 from lib.Helpers import get_extrinsics, triangulate_points, calculate_reprojection_errors, bundle_adjustment,get_extrinsics,find_point_correspondance_and_object_points
-from CapturePoints_macro_template import read_images, capture_floor_points
+from CapturePoints import read_images, capture_floor_points
 import matplotlib.pyplot as plt
 import json
 from itertools import combinations
@@ -177,8 +177,8 @@ def calculate_extrinsics(image_points):
         "t": np.array([[0],[0],[0]], dtype=np.float32)
     }]
 
-    image1 = cv.imread("macro_for_cam_SDKs/Kinect_x_Kinect_OLD/tracking/cam0/1761215118.png")
-    image2 = cv.imread("macro_for_cam_SDKs/Kinect_x_Kinect_OLD/tracking/cam1/1761215118.png")
+    image1 = cv.imread("Kinect_DK_cam/captured_images/cam0/captured_image_1757563316_000228202912.png")
+    image2 = cv.imread("Kinect_DK_cam/captured_images/cam1/captured_image_1757563316_000228202912.png")
 
     camera_poses = [{
         "R": np.eye(3),
@@ -190,32 +190,14 @@ def calculate_extrinsics(image_points):
         camera1_image_points = np.array(camera1_image_points, dtype=np.float32)
         camera2_image_points = np.array(camera2_image_points, dtype=np.float32)
 
-        # Add validation for sufficient points
-        if len(camera1_image_points) < 8 or len(camera2_image_points) < 8:
-            print(f"Insufficient points for fundamental matrix calculation. Need at least 8 points, got {len(camera1_image_points)} and {len(camera2_image_points)}")
-            continue
-
-        print(f"Camera1 points: {camera1_image_points}")
-        print(f"Camera2 points: {camera2_image_points}")
-
-        F, mask = cv.findFundamentalMat(camera1_image_points, camera2_image_points, cv.FM_RANSAC, 1.0, 0.99)
-        
-        # Add check for None fundamental matrix
-        if F is None:
-            print("Failed to compute fundamental matrix. This could be due to:")
-            print("1. Insufficient corresponding points")
-            print("2. Points are coplanar")
-            print("3. Poor point quality or matching")
-            print("Try capturing more diverse point correspondences.")
-            continue
-        
-        print(f"F: {F}")
+        F, _ = cv.findFundamentalMat(camera1_image_points, camera2_image_points, cv.FM_RANSAC, 10, 0.99999)
+        Fs.append(F.tolist())
         Fs.append(F.tolist())
 
-        K1 = np.array(camera_params[0]["intrinsic_matrix"])
-        K2 = np.array(camera_params[1]["intrinsic_matrix"])
+        K1 = camera_params[0]["intrinsic_matrix"]
+        K2 = camera_params[1]["intrinsic_matrix"]
 
-        E = K2.T @ F @ K1
+        E = np.transpose(K2) @ F @ K1
 
         R1, R2, t = cv.decomposeEssentialMat(E)
 
@@ -387,59 +369,19 @@ def origin_and_floor():
     global camera_count
     global_camera_poses, camera_count = get_extrinsics()
     # print("Camera poses: ", global_camera_poses)
-    images = read_images(path="macro_for_cam_SDKs/floor_images",debug=True)
+    images = read_images(path="floor_images",debug=True)
     points = capture_floor_points(preview=True,images=images)
     print("Points:", points)
+    assert len(points[0])==4 
     
-    # Check if we have valid points
-    valid_cameras_count = 0
-    total_valid_points = 0
-    
-    for i, camera_points in enumerate(points):
-        valid_points_in_camera = 0
-        for point in camera_points:
-            if point[0] is not None and point[1] is not None:
-                valid_points_in_camera += 1
-                total_valid_points += 1
-        
-        if valid_points_in_camera > 0:
-            valid_cameras_count += 1
-            print(f"Camera {i} has {valid_points_in_camera} valid points")
-    
-    if valid_cameras_count == 0:
-        print("No valid points detected in any camera. Cannot proceed with origin and floor calculation.")
-        return
-    elif valid_cameras_count == 1:
-        print(f"Points detected in only one camera. Need at least 2 cameras for triangulation.")
-        print("Possible solutions:")
-        print("1. Check the floor image for the other camera")
-        print("2. Ensure the ping-pong balls are visible in both cameras")
-        print("3. Adjust lighting or camera positions")
-        return
-    
-    print(f"Valid cameras: {valid_cameras_count}, Total valid points: {total_valid_points}")
-    
-    # For floor calculation, we typically expect 4 corner points
-    if total_valid_points < 4:
-        print(f"Expected at least 4 points for floor calculation, but got {total_valid_points} valid points")
-        print("You may proceed with fewer points, but accuracy will be reduced.")
-        # Uncomment the return below if you want to enforce 4 points
-        # return
-    
-    try:
-        object_points, image_points_coupled = find_point_correspondance_and_object_points(points, global_camera_poses, total_valid_points)
-        print("Object points: ", object_points)
-        set_origin(object_points)
-        save_extrinsics("after_origin_")
-        #set_floor(object_points)
-    except Exception as e:
-        print(f"Error in triangulation: {e}")
-        print("This could be due to:")
-        print("1. Insufficient point correspondences between cameras")
-        print("2. Poor camera calibration")
-        print("3. Points not visible in both cameras")
+    object_points,image_points_coupled = find_point_correspondance_and_object_points(points,global_camera_poses,4)
+    print("Object points: ",object_points)
+    set_origin(object_points)
+    save_extrinsics("after_origin_")
+    # set_floor(object_points)
 
 if __name__ == "__main__":
     image_points = get_points()
     camera_poses =  calculate_extrinsics(image_points)
     origin_and_floor()
+    

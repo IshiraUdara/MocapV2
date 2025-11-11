@@ -44,7 +44,7 @@ def acquire_and_display_images_azure(kinect, cam_num=0, flipped=True, floor=Fals
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
         # Create output dirs
-        base_dir = f'macro_for_cam_SDKs/Kinect_Azure'
+        base_dir = f'macro_for_cam_SDKs/Kinect_Azure_x_Kinect_OLD'
         if floor:
             out_dir = os.path.join(base_dir, 'tracking', f'cam{cam_num}')
         else:
@@ -176,7 +176,7 @@ def acquire_and_display_images_kinect_v2(kinect_runtime, cam_num=1, flipped=True
         window_name = f'Kinect v2 IR - cam{cam_num}'
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
-        base_dir = f'macro_for_cam_SDKs/Kinect_v2'
+        base_dir = f'macro_for_cam_SDKs/Kinect_Azure_x_Kinect_OLD'
         if floor:
             out_dir = os.path.join(base_dir, 'tracking', f'cam{cam_num}')
         else:

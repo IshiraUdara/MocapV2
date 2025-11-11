@@ -1,0 +1,14 @@
+numpy==2.2.6
+opencv-python==4.12.0.88
+scipy==1.15.3
+matplotlib==3.10.3
+Pillow==11.3.0
+pyserial==3.5
+msgpack==1.1.1
+# filterpy  # not installed (notes: EKF implementation)
+# numpy-quaternion  # not installed (notes: install as numpy-quaternion (import quaternion))
+numba==0.61.2
+msgpack==1.1.1
+# tqdm  # not installed (notes: None)
+# PySpin  # not installed (notes: FLIR Spinnaker SDK — install manually from FLIR / not pip)
+# cupy  # not installed (notes: optional: GPU numpy alternative (not required))

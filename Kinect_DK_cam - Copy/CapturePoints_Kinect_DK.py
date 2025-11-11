@@ -1,11 +1,10 @@
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
 import cv2 as cv
 import numpy as np
 import os
 import glob
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from lib.ImageOperations import _find_dot
 from lib.Helpers import get_extrinsics
 import json
@@ -193,127 +192,34 @@ def capture_floor_points(preview=False,debug=False,images=None,camera_count=2):
     if preview:
         print("Press 'space' to take a picture and 'q' to quit.")
 
-    processed_images = []
+    proccessed_images = []
     calculated_points = []
-    
     for i in range(0, camera_count):
-        image, image_points = _find_dot(images[i][0], print_location=True)
-        
-        # Handle the case where no points are detected
-        if image_points == [[None, None]] or not image_points or image_points is None:
-            print(f"No points detected in camera {i}")
-            # Create consistent structure for no points
-            calculated_points.append([[None, None]])
-        else:
-            # Ensure image_points is in the correct format
-            if isinstance(image_points, list) and len(image_points) > 0:
-                # Convert to consistent format - list of [x, y] pairs
-                formatted_points = []
-                for point in image_points:
-                    if isinstance(point, (list, tuple)) and len(point) >= 2:
-                        formatted_points.append([float(point[0]), float(point[1])])
-                    elif hasattr(point, '__len__') and len(point) >= 2:
-                        formatted_points.append([float(point[0]), float(point[1])])
-                
-                if formatted_points:
-                    calculated_points.append(formatted_points)
-                else:
-                    print(f"Invalid point format in camera {i}")
-                    calculated_points.append([[None, None]])
-            else:
-                print(f"Unexpected image_points format in camera {i}: {image_points}")
-                calculated_points.append([[None, None]])
-        
-        processed_images.append(image)
+        image, image_points = _find_dot(images[i][0],print_location=True)
+        calculated_points.append(image_points)
+        proccessed_images.append(image)
     
-    cv.namedWindow(f'Preview', cv.WINDOW_NORMAL)
+    window = cv.namedWindow(f'Preview', cv.WINDOW_NORMAL)
     if preview:
-        if len(processed_images) >= 2:
-            # Resize images if they're different sizes
-            h1, w1 = processed_images[0].shape[:2]
-            h2, w2 = processed_images[1].shape[:2]
-            if h1 != h2 or w1 != w2:
-                # Resize second image to match first
-                processed_images[1] = cv.resize(processed_images[1], (w1, h1))
-            image = np.vstack([processed_images[0], processed_images[1]])
-        else:
-            image = processed_images[0]
+        image = np.vstack([proccessed_images[0],proccessed_images[1]])
         cv.imshow("Preview", image)
         key = cv.waitKey(0) & 0xFF
         if key == ord(' '):
             print("Getting points...")
+
         if key == ord('q'):
             print("Exiting...")
             cv.destroyAllWindows()
             quit()
     
     if debug:
-        print("All calculated points:", calculated_points)
-        for i, points in enumerate(calculated_points):
-            print(f"Image points for camera {i}: {points}")
+        print("Image points for camera", i, ":", image_points)
 
     cv.destroyAllWindows()
-    
-    # Handle the mixed results case
-    # Check if we have at least one camera with valid points
-    valid_cameras = []
-    for i, camera_points in enumerate(calculated_points):
-        if camera_points and camera_points != [[None, None]]:
-            # Check if any point in this camera is valid
-            has_valid_points = any(p[0] is not None and p[1] is not None for p in camera_points)
-            if has_valid_points:
-                valid_cameras.append(i)
-    
-    if len(valid_cameras) == 0:
-        print("No valid points detected in any camera")
-        return np.array([[[None, None]] for _ in range(camera_count)])
-    
-    # For floor point calculation, we might need manual intervention if only one camera has points
-    if len(valid_cameras) == 1:
-        print(f"Only camera {valid_cameras[0]} has detected points: {calculated_points[valid_cameras[0]]}")
-        print("You may need to:")
-        print("1. Manually mark points in the other camera")
-        print("2. Check lighting/visibility conditions")
-        print("3. Adjust detection parameters")
-        
-        # For now, return the structure with None for the camera without points
-        result = []
-        for i in range(camera_count):
-            if i in valid_cameras:
-                result.append(calculated_points[i])
-            else:
-                result.append([[None, None]])
-        
-        try:
-            return np.array(result, dtype=object)  # Use object dtype to handle mixed None/float arrays
-        except Exception as e:
-            print(f"Error creating numpy array: {e}")
-            return result  # Return as list if numpy array creation fails
-    
-    # If we have points from multiple cameras, proceed normally
-    try:
-        # Ensure all cameras have same number of points (pad with None if needed)
-        max_points = max(len(points) for points in calculated_points if points != [[None, None]])
-        normalized_points = []
-        
-        for camera_points in calculated_points:
-            if camera_points == [[None, None]]:
-                normalized_points.append([[None, None]] * max_points)
-            else:
-                # Pad or truncate to match max_points
-                while len(camera_points) < max_points:
-                    camera_points.append([None, None])
-                normalized_points.append(camera_points[:max_points])
-        
-        return np.array(normalized_points, dtype=object)
-    except Exception as e:
-        print(f"Error converting to numpy array: {e}")
-        print(f"Calculated points structure: {calculated_points}")
-        return calculated_points  # Return as list if numpy array creation fails
-
+    return np.array(calculated_points)
 
 if __name__ == "__main__":
-    images = read_images(path="macro_for_cam_SDKs/Kinect_x_Kinect_OLD/captured_images",debug=True)
+    images = read_images(path="macro_for_cam_SDKs/Kinect_x_EZVIZ/captured_images",debug=True)
     points = capture_pose_points(images,preview=True,debug=True)
     print(points)
     save_points(points)

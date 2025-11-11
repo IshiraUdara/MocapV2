@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "C:\Users\Ishma\Documents\LiveRoom\MocapV2\Kinect_DK_cam\TakePhotos_dual-Extrinsics_Kinect_both_by_touchdesigner.py", line 4, in <module>
+    import cv2
+ModuleNotFoundError: No module named 'cv2'
