@@ -313,7 +313,7 @@ def capture_floor_points(preview=False,debug=False,images=None,camera_count=2):
 
 
 if __name__ == "__main__":
-    images = read_images(path="macro_for_cam_SDKs/Kinect_x_Kinect_OLD/captured_images",debug=True)
+    images = read_images(path="macro_for_cam_SDKs/Kinect_Azure_x_Kinect_OLD/captured_images",debug=True)
     points = capture_pose_points(images,preview=True,debug=True)
     print(points)
     save_points(points)

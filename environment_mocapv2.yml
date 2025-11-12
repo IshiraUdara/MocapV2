@@ -1,0 +1,20 @@
+name: mocapv2
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - numpy=2.2.6
+  - numba=0.61.2
+  - scipy=1.15.3
+  - pyserial=3.5
+  - pillow=11.3.0
+  - opencv        # install opencv from conda-forge
+  - git
+  - pip:
+    - comtypes==1.4.13
+    - pykinect2==0.1.0
+    - pykinect-azure==0.0.4
+    - numpy-quaternion
+prefix: ./.conda
