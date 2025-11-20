@@ -8,3 +8,4 @@ checkerboard/
 tracking/
 .vscode/
 test*.py
+client_test.py
