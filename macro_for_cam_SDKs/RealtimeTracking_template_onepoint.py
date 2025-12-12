@@ -7,7 +7,6 @@ import time
 import threading
 import queue
 import socket
-import msgpack
 
 import cv2
 import numpy as np
@@ -17,6 +16,7 @@ from pykinect_azure.k4a import Image, _k4a
 from lib.Helpers import find_point_correspondance_and_object_points, get_extrinsics
 from lib.ImageOperations import _find_dot
 
+import random
 # Optional Kinect v2 (Kinect for Xbox One) support
 try:
     from pykinect2 import PyKinectRuntime, PyKinectV2
@@ -225,137 +225,97 @@ def _select_best_3d_point(points3d, cluster_threshold=0.06):
 
 
 def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True):
-    """Fuse detections from both cameras, triangulate and send best single 3D point."""
-    global camera_poses
-    print("Fused tracking started")
+    """Fuse detections from both cameras, triangulate and send best single 3D point.
+       Server-only mode: Python acts as TCP server; Unity should connect as client.
 
-    client_mode = False
+       Communication matches test.py style: plain UTF-8 lines sent over TCP.
+       Each line: "x y z" (space separated, meters), newline-delimited.
+    """
+    global camera_poses
+    print("Fused tracking started (server mode)")
+
     server = None
     conn = None
 
     if stream:
-        HOST = "127.0.0.2"
-        PORT = 5000
+        HOST = "127.0.0.1"   # Python server address (Unity client should connect here)
+        PORT = 5005           # match test.py default
 
-        # First try to connect as a client (Unity may be the server)
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            print(f"Trying to connect to Unity at {HOST}:{PORT} (client mode)...")
-            sock = socket.create_connection((HOST, PORT), timeout=5)
-            conn = sock
-            client_mode = True
-            print(f"Connected to Unity server at {HOST}:{PORT} (client mode)")
-        except Exception:
-            # Fall back to acting as server (accept incoming connection)
-            print(f"No listener at {HOST}:{PORT}, falling back to server mode...")
-            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            server.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            server.bind((HOST, PORT))
+        except Exception as e:
+            print(f"Failed to bind server on {HOST}:{PORT}: {e}")
+            # try ephemeral port
+            server.bind((HOST, 0))
+            PORT = server.getsockname()[1]
+            print(f"Bound to ephemeral port {PORT}")
+        server.listen(1)
+        print(f"Waiting for Unity client to connect on {HOST}:{PORT} (server mode)...")
 
-            # try bind, fallback to nearby ports or ephemeral if permission/port-in-use errors occur
-            bound = False
-            tried_ports = []
-            for attempt in [PORT] + list(range(PORT + 1, PORT + 6)):
-                try:
-                    server.bind((HOST, attempt))
-                    bound = True
-                    PORT = attempt
-                    break
-                except PermissionError as pe:
-                    print(f"PermissionError binding to {HOST}:{attempt}: {pe}")
-                    tried_ports.append(attempt)
-                    continue
-                except OSError as oe:
-                    print(f"OSError binding to {HOST}:{attempt}: {oe}")
-                    tried_ports.append(attempt)
-                    continue
-
-            if not bound:
-                try:
-                    server.bind((HOST, 0))
-                    PORT = server.getsockname()[1]
-                    bound = True
-                    print(f"Fell back to ephemeral port {PORT}")
-                except Exception as e:
-                    print(f"Failed to bind any port (attempted {tried_ports}): {e}")
-                    raise
-
-            server.listen(1)
-            print(f"Waiting for Unity to connect on {HOST}:{PORT} (server mode)...")
-            conn, _ = server.accept()
-            print("Connected to Unity (server mode)")
     else:
+        server = None
         conn = None
 
-    best_point = [0] * 8
-    old = time.time()
     while running.is_set():
         try:
-            # get newest detections
-            azure_pts = _drain_latest(out_queue_azure)
-            kv2_pts = _drain_latest(out_queue_kv2)
-
-            if azure_pts is None and kv2_pts is None:
-                time.sleep(0.005)
-                continue
-
-            image_points = []
-            image_points.append(azure_pts if azure_pts is not None else [])
-            image_points.append(kv2_pts if kv2_pts is not None else [])
-
-            # triangulate / find correspondences
-            object_points, image_p = find_point_correspondance_and_object_points(image_points, camera_poses, 4)
-
-            best3d = None
-            if _is_nonempty(object_points):
-                best3d = _select_best_3d_point(object_points, cluster_threshold=0.06)
-
-            if best3d is not None and np.all(np.isfinite(best3d)):
-                best_point = [0, 0, 0, 0, float(best3d[0]), float(best3d[1]), float(best3d[2]), 0]
-            else:
-                best_point = [0, 0, 0, 0, 0, 0, 0, 0]
-
-            data = {"tracker1": best_point}
-            if stream:
+            # Accept client if needed
+            if stream and conn is None:
                 try:
-                    # frame with newline so clients can split messages
-                    packed = msgpack.packb(data, use_bin_type=True) + b"\n"
-                    conn.sendall(packed)
+                    conn, addr = server.accept()
+                    print(f"Unity connected from {addr}")
+                    conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                except Exception as e:
+                    print(f"Accept failed: {e}")
+                    time.sleep(0.1)
+                    continue
+
+            # # get newest detections
+            # azure_pts = _drain_latest(out_queue_azure)
+            # kv2_pts = _drain_latest(out_queue_kv2)
+
+            # if azure_pts is None and kv2_pts is None:
+            #     time.sleep(0.005)
+            #     continue
+
+            # image_points = []
+            # image_points.append(azure_pts if azure_pts is not None else [])
+            # image_points.append(kv2_pts if kv2_pts is not None else [])
+
+            # # triangulate / find correspondences
+            # object_points, image_p = find_point_correspondance_and_object_points(image_points, camera_poses, 4)
+
+            # best3d = None
+            # if _is_nonempty(object_points):
+            #     best3d = _select_best_3d_point(object_points, cluster_threshold=0.06)
+
+            # if best3d is not None and np.all(np.isfinite(best3d)):
+            #     x, y, z = float(best3d[0]), float(best3d[1]), float(best3d[2])
+            # else:
+            #     x, y, z = 0.0, 0.0, 0.0
+
+            x_vals = [0.0, 5.0, 10.0, 15.0, 20.0]
+            y_vals = [0.0, 5.0, 10.0, 15.0, 20.0]
+            z_vals = [0.0, 5.0, 10.0, 15.0, 20.0]
+            if stream and conn:
+                try:
+                    x = random.choice(x_vals)
+                    y = random.choice(y_vals)
+                    z = random.choice(z_vals)
+                    # plain UTF-8 line: "x y z\n"
+                    line = f"{x} {y} {z}\n".encode("utf-8")
+                    conn.sendall(line)
                 except (BrokenPipeError, ConnectionResetError, OSError) as e:
                     print("Unity disconnected or send failed:", repr(e))
                     try:
                         conn.close()
                     except Exception:
                         pass
-
-                    # Reconnect strategy depends on how we originally connected
-                    if client_mode:
-                        # try to reconnect as client
-                        reconnected = False
-                        while running.is_set() and not reconnected:
-                            try:
-                                print("Attempting to reconnect to Unity (client mode)...")
-                                conn = socket.create_connection((HOST, PORT), timeout=5)
-                                reconnected = True
-                                print("Reconnected to Unity (client mode)")
-                            except Exception:
-                                time.sleep(0.5)
-                        if not reconnected:
-                            # exit or continue loop waiting for running cleared
-                            continue
-                    else:
-                        # server mode: accept a new incoming connection
-                        print("Waiting for Unity to reconnect (server mode)...")
-                        while running.is_set():
-                            try:
-                                conn, _ = server.accept()
-                                print("Reconnected (server mode)")
-                                break
-                            except OSError as ae:
-                                time.sleep(0.1)
-                                continue
+                    conn = None
                     continue
             else:
-                print("Fused:", best_point)
+                print(f"Fused point: {x} {y} {z}")
 
             # small sleep to limit CPU
             time.sleep(0.005)
@@ -365,6 +325,7 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
             time.sleep(0.01)
             continue
 
+    # cleanup
     if stream:
         try:
             if conn:

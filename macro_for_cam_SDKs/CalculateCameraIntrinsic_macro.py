@@ -3,7 +3,6 @@ import numpy as np
 import glob
 import json
 import sys
-from pypreprocessor import pypreprocessor
 
 def calculate_camera_intrinsics(wait_time=1):
     """
