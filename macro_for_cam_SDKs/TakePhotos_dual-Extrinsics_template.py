@@ -312,7 +312,7 @@ def main_combined(auto=False, floor=False, flipped=True):
 
 if __name__ == '__main__':
     try:
-        success = main_combined(auto=False, floor=False, flipped=True)
+        success = main_combined(auto=False, floor=True, flipped=True)
         sys.exit(0 if success else 1)
     except KeyboardInterrupt:
         running.clear()

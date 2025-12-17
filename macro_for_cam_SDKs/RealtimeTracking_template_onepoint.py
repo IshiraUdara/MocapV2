@@ -271,39 +271,43 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
                     time.sleep(0.1)
                     continue
 
-            # # get newest detections
-            # azure_pts = _drain_latest(out_queue_azure)
-            # kv2_pts = _drain_latest(out_queue_kv2)
+            # get newest detections
+            azure_pts = _drain_latest(out_queue_azure)
+            kv2_pts = _drain_latest(out_queue_kv2)
 
-            # if azure_pts is None and kv2_pts is None:
-            #     time.sleep(0.005)
-            #     continue
+            if azure_pts is None and kv2_pts is None:
+                time.sleep(0.005)
+                continue
 
-            # image_points = []
-            # image_points.append(azure_pts if azure_pts is not None else [])
-            # image_points.append(kv2_pts if kv2_pts is not None else [])
+            image_points = []
+            image_points.append(azure_pts if azure_pts is not None else [])
+            image_points.append(kv2_pts if kv2_pts is not None else [])
+        
+            # triangulate / find correspondences
+            object_points, image_p = find_point_correspondance_and_object_points(image_points, camera_poses, 1)
+          
+            best3d = None
+            if _is_nonempty(object_points):
+                best3d = _select_best_3d_point(object_points, cluster_threshold=0.06)
 
-            # # triangulate / find correspondences
-            # object_points, image_p = find_point_correspondance_and_object_points(image_points, camera_poses, 4)
-
-            # best3d = None
-            # if _is_nonempty(object_points):
-            #     best3d = _select_best_3d_point(object_points, cluster_threshold=0.06)
-
-            # if best3d is not None and np.all(np.isfinite(best3d)):
-            #     x, y, z = float(best3d[0]), float(best3d[1]), float(best3d[2])
-            # else:
-            #     x, y, z = 0.0, 0.0, 0.0
+            if best3d is not None and np.all(np.isfinite(best3d)):
+                x, y, z = float(best3d[0]), float(best3d[1]), float(best3d[2])
+                print(f"Fused point: {x:.3f} {y:.3f} {z:.3f}")
+            else:
+                x, y, z = 0.0, 0.0, 0.0
 
             x_vals = [0.0, 5.0, 10.0, 15.0, 20.0]
             y_vals = [0.0, 5.0, 10.0, 15.0, 20.0]
             z_vals = [0.0, 5.0, 10.0, 15.0, 20.0]
             if stream and conn:
                 try:
-                    x = random.choice(x_vals)
-                    y = random.choice(y_vals)
-                    z = random.choice(z_vals)
+                    x_random = random.choice(x_vals)
+                    y_random = random.choice(y_vals)
+                    z_random = random.choice(z_vals)
                     # plain UTF-8 line: "x y z\n"
+                    #time.sleep(1)  # simulate processing 
+                   
+                    time.sleep(0.1)  # simulate ~60Hz
                     line = f"{x} {y} {z}\n".encode("utf-8")
                     conn.sendall(line)
                 except (BrokenPipeError, ConnectionResetError, OSError) as e:
@@ -338,12 +342,11 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
         except Exception:
             pass
 
-
 def main():
     global running
     try:
         print("MoCap fused tracking - Azure Kinect DK + Kinect v2")
-
+        
         # initialize Azure library
         pykinect.initialize_libraries(track_body=False)
 
