@@ -9,6 +9,8 @@ import types
 
 # PyKinect v2 (Kinect for Xbox One / SDK v2.0_1409)
 from pykinect2 import PyKinectRuntime, PyKinectV2
+import pykinect_azure as pykinect
+from pykinect_azure.k4a import _k4a, Image
 
 # --- monkeypatch class to provide get_last_infrared_frame if missing ---
 def _pykinect_get_last_infrared_frame(self):
@@ -50,45 +52,26 @@ running.set()
 take_photo = threading.Event()
 take_photo.clear()
 
-def acquire_and_display_images(kinect: PyKinectRuntime.PyKinectRuntime, cam_num, flipped=True, floor=False):
-    """
-    Robust IR acquisition with a watchdog:
-     - prefers IR getter, falls back to depth
-     - warmup wait to let sensor settle
-     - if no valid frames for `max_no_frame_count` iterations -> close window and exit
-    """
-    global running, take_photo
+latest_kv2_color = {"frame": None, "size": (0, 0)}
+latest_azure_color = {"frame": None}
+
+def acquire_and_display_color_kv2(kinect: PyKinectRuntime.PyKinectRuntime, cam_num, flipped=True, floor=False):
+    global running, take_photo, latest_kv2_color
     try:
-        window_name = f'Kinect v2 IR Feed - cam{cam_num}'
+        window_name = f'Kinect v2 Color - cam{cam_num}'
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
-        # determine frame size
         try:
-            ir_desc = getattr(kinect, 'infrared_frame_desc', None)
-            if ir_desc:
-                height, width = ir_desc.Height, ir_desc.Width
+            cdesc = getattr(kinect, 'color_frame_desc', None)
+            if cdesc:
+                height, width = cdesc.Height, cdesc.Width
             else:
-                depth_desc = getattr(kinect, 'depth_frame_desc', None)
-                if depth_desc:
-                    height, width = depth_desc.Height, depth_desc.Width
-                else:
-                    height, width = 424, 512
+                height, width = 1080, 1920
         except Exception:
-            height, width = 424, 512
+            height, width = 1080, 1920
 
-        # select getter
-        getter = None
-        getter_name = None
-        if hasattr(kinect, 'get_last_infrared_frame'):
-            getter = lambda: kinect.get_last_infrared_frame()
-            getter_name = 'get_last_infrared_frame'
-        elif hasattr(kinect, 'get_last_depth_frame'):
-            getter = lambda: kinect.get_last_depth_frame()
-            getter_name = 'get_last_depth_frame (fallback)'
-        else:
-            getter = None
-            getter_name = 'none'
-
+        getter = getattr(kinect, 'get_last_color_frame', None)
+        getter_name = 'get_last_color_frame' if getter else 'none'
         print(f"[Kinect v2] selected frame getter: {getter_name}")
 
         # allow sensor to settle
@@ -110,7 +93,7 @@ def acquire_and_display_images(kinect: PyKinectRuntime.PyKinectRuntime, cam_num,
                     raw0 = None
                 if raw0 is not None:
                     try:
-                        a0 = np.array(raw0, dtype=np.uint16)
+                        a0 = np.array(raw0)
                         if a0.size >= 16:
                             got_warmup = True
                             print("Warmup: first valid frame received.")
@@ -125,15 +108,14 @@ def acquire_and_display_images(kinect: PyKinectRuntime.PyKinectRuntime, cam_num,
         start_time = time.time()
         fps = 0
 
-        # watchdog: if we get too many consecutive "no frame" results, quit gracefully
-        # increased threshold to allow slow sensors to start
-        max_no_frame_count = int(800)   # ~800 * 0.01s = ~8s
+        # watchdog
+        max_no_frame_count = int(800)
         no_frame_count = 0
 
         while running.is_set():
             try:
                 if getter is None:
-                    print("No IR/depth getter available on this PyKinectRuntime instance.")
+                    print("No color getter available on this PyKinectRuntime instance.")
                     time.sleep(0.2)
                     break
 
@@ -156,47 +138,29 @@ def acquire_and_display_images(kinect: PyKinectRuntime.PyKinectRuntime, cam_num,
                 # reset watchdog on valid raw
                 no_frame_count = 0
 
-                # raw is expected as 1D uint16 array-like
+                # raw is expected as 1D uint8 BGRA array-like
                 try:
-                    arr = np.array(raw, dtype=np.uint16)
+                    arr = np.array(raw, dtype=np.uint8)
                     if arr.size == 0:
                         no_frame_count += 1
                         time.sleep(0.01)
                         continue
-                    ir_image = arr.reshape((height, width))
+                    color_bgra = arr.reshape((height, width, 4))
                 except Exception:
-                    if isinstance(raw, np.ndarray) and raw.ndim == 2:
-                        ir_image = raw.astype(np.uint16)
-                    else:
-                        try:
-                            ir_image = np.array(raw, dtype=np.uint16).reshape((height, width))
-                        except Exception:
-                            print("Failed to reshape incoming frame, skipping.")
-                            time.sleep(0.01)
-                            continue
+                    try:
+                        color_bgra = raw.reshape((height, width, 4)).astype(np.uint8)
+                    except Exception:
+                        print("Failed to reshape incoming color frame, skipping.")
+                        time.sleep(0.01)
+                        continue
 
-                # Convert 16-bit IR to 8-bit for display.
-                # Use dynamic normalization (min/max) because raw IR may be near-zero or high-range.
-                vmin = int(ir_image.min())
-                vmax = int(ir_image.max())
-                if vmax <= vmin:
-                    # flat image -> display as zeros (avoid division by zero)
-                    ir8 = np.zeros((height, width), dtype=np.uint8)
-                else:
-                    # normalize to full 0-255 range for visibility
-                    ir8 = ((ir_image.astype(np.float32) - vmin) * (255.0 / (vmax - vmin))).clip(0, 255).astype(np.uint8)
-                # optional local contrast boost (uncomment if needed):
-                # ir8 = cv2.equalizeHist(ir8)
-                disp = cv2.cvtColor(ir8, cv2.COLOR_GRAY2BGR)
-
-                # occasional debug overlay so you can see raw range
-                if frame_count % 30 == 0:
-                    print(f"IR stats: min={vmin} max={vmax} mean={int(ir_image.mean())}")
-                cv2.putText(disp, f"min:{vmin} max:{vmax}", (10, 60),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                disp = cv2.cvtColor(color_bgra, cv2.COLOR_BGRA2BGR)
 
                 if flipped:
                     disp = cv2.flip(disp, 1)
+
+                latest_kv2_color["frame"] = disp
+                latest_kv2_color["size"] = (width, height)
 
                 frame_count += 1
                 if frame_count % 30 == 0:
@@ -205,7 +169,7 @@ def acquire_and_display_images(kinect: PyKinectRuntime.PyKinectRuntime, cam_num,
                     frame_count = 0
                     start_time = end_time
 
-                cv2.putText(disp, f"IR FPS: {fps:.1f} [{getter_name}]", (10, 30),
+                cv2.putText(disp, f"Color FPS: {fps:.1f} [{getter_name}]", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
                 cv2.imshow(window_name, disp)
 
@@ -218,10 +182,10 @@ def acquire_and_display_images(kinect: PyKinectRuntime.PyKinectRuntime, cam_num,
 
                 if take_photo.is_set():
                     ts = int(time.time())
-                    out_dir = f'Kinect_DK_cam/tracking/cam{cam_num}' if floor else f'Kinect_DK_cam/captured_images/cam{cam_num}'
+                    out_dir = f'Kinect_DK_cam/captured_images/cam{cam_num}'
                     os.makedirs(out_dir, exist_ok=True)
-                    out_path = os.path.join(out_dir, f'{ts}_ir.png')
-                    cv2.imwrite(out_path, ir8)
+                    out_path = os.path.join(out_dir, f'{ts}_color_kv2.png')
+                    cv2.imwrite(out_path, disp)
                     print("Saved:", out_path)
                     take_photo.clear()
 
@@ -239,27 +203,16 @@ def acquire_and_display_images(kinect: PyKinectRuntime.PyKinectRuntime, cam_num,
         return True
 
     except Exception as ex:
-        print(f"IR acquisition error: {ex}")
+        print(f"Kinect v2 color acquisition error: {ex}")
         return False
 
-
-def run_single_camera(device_id=0, cam_num=0, flipped=True, floor=True):
-    """
-    Initialize Kinect v2 runtime and run IR acquisition.
-    Note: Kinect v2 supports a single device per machine in typical setups.
-    """
+def run_kv2_color(cam_num=1, flipped=True):
     try:
-        # initialize Kinect runtime for infrared + depth frames (give runtime both sources)
-        src = PyKinectV2.FrameSourceTypes_Infrared | PyKinectV2.FrameSourceTypes_Depth
+        src = PyKinectV2.FrameSourceTypes_Color
         kinect = PyKinectRuntime.PyKinectRuntime(src)
-        print('Kinect v2 initialized for IR capture')
-
-        # small extra wait after init to let runtime open device
+        print('Kinect v2 initialized for Color')
         time.sleep(1.5)
-        
-        result = acquire_and_display_images(kinect, cam_num, flipped, floor)
-
-        # cleanup runtime
+        result = acquire_and_display_color_kv2(kinect, cam_num, flipped, floor=False)
         try:
             kinect.close()
         except Exception:
@@ -271,30 +224,112 @@ def run_single_camera(device_id=0, cam_num=0, flipped=True, floor=True):
         return False
 
 
-def main(auto=False, floor=False, flipped=True):
-    """
-    Main entry: start a single Kinect v2 thread for IR capture.
-    """
+def acquire_and_display_color_azure(device, cam_num, flipped=True):
+    global running, take_photo, latest_azure_color
+    try:
+        window_name = f'Azure Kinect Color - cam{cam_num}'
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
+        time.sleep(1.0)
+        while running.is_set():
+            try:
+                capture = device.get_capture()
+                if capture is None:
+                    time.sleep(0.001)
+                    continue
+
+                color_handle = _k4a.k4a_capture_get_color_image(capture.handle if hasattr(capture, 'handle') else capture)
+                if not color_handle:
+                    continue
+
+                try:
+                    w = _k4a.k4a_image_get_width_pixels(color_handle)
+                    h = _k4a.k4a_image_get_height_pixels(color_handle)
+                    size = _k4a.k4a_image_get_size(color_handle)
+                    if w <= 0 or h <= 0 or size <= 0:
+                        continue
+
+                    arr = Image(color_handle).to_numpy()
+                    color_bgra = arr if not isinstance(arr, tuple) else arr[1]
+                    if color_bgra is None:
+                        continue
+
+                    if color_bgra.ndim == 3 and color_bgra.shape[2] == 4:
+                        disp = cv2.cvtColor(color_bgra, cv2.COLOR_BGRA2BGR)
+                    else:
+                        # if format already BGR
+                        disp = color_bgra.copy()
+                finally:
+                    _k4a.k4a_image_release(color_handle)
+
+                if flipped:
+                    disp = cv2.flip(disp, 1)
+
+                latest_azure_color["frame"] = disp
+                cv2.imshow(window_name, disp)
+
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27:
+                    running.clear()
+                    break
+                elif key == ord('s'):
+                    take_photo.set()
+
+                if take_photo.is_set():
+                    ts = int(time.time())
+                    out_dir = f'Kinect_DK_cam/captured_images/cam0'
+                    os.makedirs(out_dir, exist_ok=True)
+                    out_path = os.path.join(out_dir, f'{ts}_color_azure.png')
+                    cv2.imwrite(out_path, disp)
+                    print("Saved:", out_path)
+                    take_photo.clear()
+
+                time.sleep(0.001)
+
+            except Exception as e:
+                print(f"Azure color loop error: {e}")
+                time.sleep(0.01)
+                continue
+
+        try:
+            cv2.destroyWindow(window_name)
+        except Exception:
+            pass
+        return True
+
+    except Exception as ex:
+        print(f"Azure color acquisition error: {ex}")
+        return False
+
+
+def main(flipped=True):
     global running
     try:
-        print('Kinect v2 IR Capture (SDK v2.0_1409)')
+        print('Dual Color Capture: Azure Kinect + Kinect v2')
 
-        # Start single camera thread (Kinect v2 typically only one)
-        t = threading.Thread(target=run_single_camera, args=(0, 0, flipped, floor))
-        t.daemon = True
-        t.start()
+        pykinect.initialize_libraries(track_body=False)
 
-        time.sleep(2)  # allow init
+        cfg = pykinect.default_configuration
+        cfg.color_format = pykinect.K4A_IMAGE_FORMAT_COLOR_BGRA32
+        cfg.color_resolution = pykinect.K4A_COLOR_RESOLUTION_1080P
+        cfg.depth_mode = pykinect.K4A_DEPTH_MODE_OFF
+        cfg.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_30
+        azure = pykinect.start_device(config=cfg)
+
+        t_azure = threading.Thread(target=acquire_and_display_color_azure, args=(azure, 0, flipped))
+        t_azure.daemon = True
+        t_azure.start()
+
+        t_kv2 = threading.Thread(target=run_kv2_color, args=(1, flipped))
+        t_kv2.daemon = True
+        t_kv2.start()
 
         while running.is_set():
-            time.sleep(0.5)
-            if auto:
-                take_photo.set()
-                time.sleep(0.5)
-                take_photo.clear()
+            time.sleep(0.1)
 
-        t.join(timeout=2)
-        print('Stopping IR capture')
+        t_azure.join(timeout=2)
+        t_kv2.join(timeout=2)
+        print('Stopping color capture')
         return True
 
     except Exception as ex:
@@ -304,7 +339,7 @@ def main(auto=False, floor=False, flipped=True):
 
 if __name__ == '__main__':
     try:
-        success = main(auto=False, floor=False, flipped=True)
+        success = main(flipped=True)
         print('Exiting...')
         sys.exit(0 if success else 1)
     except KeyboardInterrupt:

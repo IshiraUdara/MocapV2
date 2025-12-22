@@ -47,7 +47,7 @@ def _find_dot(img,print_location=False,return_filtered=False):
             circularity = 4 * np.pi * area / (perimeter * perimeter)
             # print("Area:", area)
             # print("Perimeter:", circularity)
-            if circularity > 0.5 and area > 500:
+            if circularity > 0.5 and area > 5:
                 contours.append(cnt)
     if return_filtered:
         img = cv.drawContours(grey, contours, -1, (0,0,255), 4)

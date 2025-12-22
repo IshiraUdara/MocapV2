@@ -177,8 +177,8 @@ def calculate_extrinsics(image_points):
         "t": np.array([[0],[0],[0]], dtype=np.float32)
     }]
 
-    image1 = cv.imread("Kinect_DK_cam/captured_images/cam0/captured_image_1757563316_000228202912.png")
-    image2 = cv.imread("Kinect_DK_cam/captured_images/cam1/captured_image_1757563316_000228202912.png")
+    image1 = cv.imread("Kinect_DK_cam/floor_images/cam0/1766123505_color_azure.png")
+    image2 = cv.imread("Kinect_DK_cam/floor_images/cam1/1766123505_color_kv2.png")
 
     camera_poses = [{
         "R": np.eye(3),

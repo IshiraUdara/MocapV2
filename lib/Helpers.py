@@ -175,11 +175,22 @@ def bundle_adjustment(image_points, camera_poses):
     
     return camera_poses
 
-def find_point_correspondance_and_object_points(image_points, camera_poses,obj_count=0,debug=False):
+def find_point_correspondance_and_object_points(image_points, camera_poses, obj_count=0, debug=False):
     '''image_points shape = [camera_count, obj points, 2]'''
     global camera_params
-    # obj_count = len(image_points[0])
     read_camera_params()
+
+    # --- SHORTCUT: If only one point per camera, just triangulate directly ---
+    # image_points: [ [ [x0, y0] ], [ [x1, y1] ] ]
+    if (
+        isinstance(image_points, list)
+        and len(image_points) == len(camera_poses)
+        and all(isinstance(cam_pts, list) and len(cam_pts) == 1 for cam_pts in image_points)
+    ):
+        # Flatten to shape [camera_count, 2]
+        flat_points = [cam_pts[0] for cam_pts in image_points]
+        object_point = triangulate_point(flat_points, camera_poses)
+        return np.array([object_point]), np.array([flat_points])
 
     for image_points_i in image_points:
         try:
@@ -216,9 +227,11 @@ def find_point_correspondance_and_object_points(image_points, camera_poses,obj_c
             if len(points) != 0:
                 distances_to_line = np.abs(a*points[:,0] + b*points[:,1] + c) / np.sqrt(a**2 + b**2)
 
-            distance_cutoff = 10
+            distance_cutoff = 250
             possible_matches = points[distances_to_line < distance_cutoff].copy()
-
+            if debug:
+                print("Distances to epipolar line:", distances_to_line)
+                print("Possible matches:", possible_matches)
             # Commenting out this code produces more points, but more garbage points too
             # delete closest match from future consideration
             # if len(points) != 0:
@@ -255,6 +268,7 @@ def find_point_correspondance_and_object_points(image_points, camera_poses,obj_c
     image_points_all = []
     if debug:
         print("Correspondances: ", correspondances)
+        
     for image_points in correspondances:
         
         object_points_i = triangulate_points(image_points, camera_poses)

@@ -46,6 +46,15 @@ def _is_nonempty(x):
         return True
 
 camera_poses, camera_count = get_extrinsics("./jsons/after_floor_extrinsics.json")
+if camera_count < 2:
+    print(f"[Init] Need 2 camera extrinsics, got {camera_count}. 3D fusion will output zeros.")
+else:
+    # optional: print camera names/order
+    try:
+        names = [cp.get("name", f"cam{i}") for i, cp in enumerate(camera_poses)]
+        print(f"[Init] Loaded extrinsics for: {names}")
+    except Exception:
+        print("[Init] Loaded extrinsics, but could not list names.")
 
 # Lightweight queues to pass detections (keep only latest)
 data_queue_azure = queue.Queue(maxsize=4)
@@ -63,7 +72,7 @@ def _drain_latest(q):
 
 
 def track_points_azure(kinect, out_queue: queue.Queue, preview=False):
-    """Acquire IR from Azure Kinect DK, detect dots and push detections (list of [x,y])."""
+    """Acquire IR from Azure Kinect DK, preprocess, detect dot, push detections."""
     try:
         serial = kinect.get_serialnum()
         win = f'Azure IR - {serial}'
@@ -94,23 +103,33 @@ def track_points_azure(kinect, out_queue: queue.Queue, preview=False):
                     if ir_image is None:
                         continue
 
-                    gray = (ir_image >> 8).astype(np.uint8) if ir_image.dtype == np.uint16 else ir_image.astype(np.uint8)
+                    # robust preprocess -> uint8
+                    if ir_image.dtype == np.uint16:
+                        gray8 = _azure_preprocess_ir_u16(ir_image)
+                    else:
+                        gray8 = cv2.normalize(ir_image.astype(np.float32), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
                 finally:
                     _k4a.k4a_image_release(ir_handle)
 
-                processed, detected = _find_dot(gray, print_location=False)
-                # push latest
-                try:
-                    if out_queue.full():
-                        out_queue.get_nowait()
-                    out_queue.put_nowait(detected)
-                except queue.Full:
-                    pass
+                processed, detected = _azure_detect_dot(gray8, bright_dot=True, max_points=2)
+                # enqueue only valid detections with a timestamp
+                is_valid = (
+                    _is_nonempty(detected)
+                    and detected[0][0] is not None
+                    and detected[0][1] is not None
+                )
+                
+                if is_valid:
+                    try:
+                        if out_queue.full():
+                            out_queue.get_nowait()
+                        out_queue.put_nowait((time.time(), detected))  # (ts, [[x,y]])
+                    except queue.Full:
+                        pass
 
                 if preview:
-                    disp = processed if processed.ndim == 3 else cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
-                    cv2.imshow(win, disp)
+                    cv2.imshow(win, processed)
                     if cv2.waitKey(1) & 0xFF == 27:
                         running.clear()
                         break
@@ -160,23 +179,29 @@ def track_points_kinect_v2(kinect_runtime, out_queue: queue.Queue, preview=False
                 except Exception:
                     ir_image = ir_frame.reshape((h, w)).astype(np.uint16)
 
-                gray = (ir_image >> 8).astype(np.uint8)
-
-                processed, detected = _find_dot(gray, print_location=False)
-                try:
-                    if out_queue.full():
-                        out_queue.get_nowait()
-                    out_queue.put_nowait(detected)
-                except queue.Full:
-                    pass
+                # PREPROCESS AND DETECT (replace >>8 + _find_dot)
+                gray8 = _kv2_preprocess_ir_u16(ir_image)
+                processed, detected = _kv2_detect_dot(gray8, bright_dot=True, max_points=2)
+                
+                # enqueue only valid detections with a timestamp
+                is_valid = (
+                    _is_nonempty(detected)
+                    and detected[0][0] is not None
+                    and detected[0][1] is not None
+                )
+                if is_valid:
+                    try:
+                        if out_queue.full():
+                            out_queue.get_nowait()
+                        out_queue.put_nowait((time.time(), detected))  # (ts, [[x,y]])
+                    except queue.Full:
+                        pass
 
                 if preview:
-                    disp = processed if processed.ndim == 3 else cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
-                    cv2.imshow(win, disp)
+                    cv2.imshow(win, processed)
                     if cv2.waitKey(1) & 0xFF == 27:
                         running.clear()
                         break
-
             except Exception as e:
                 print(f"Kinect v2 loop error: {e}")
                 time.sleep(0.01)
@@ -223,6 +248,202 @@ def _select_best_3d_point(points3d, cluster_threshold=0.06):
     centroid = pts[best].mean(axis=0)
     return centroid.tolist()
 
+def _kv2_preprocess_ir_u16(ir_u16: np.ndarray) -> np.ndarray:
+    """Normalize Kinect v2 IR (uint16) to contrasty uint8."""
+    if ir_u16 is None:
+        return None
+    a = ir_u16.astype(np.uint16)
+    # clip very bright speculars to reduce false blobs
+    hi = np.percentile(a, 99.5)
+    a = np.clip(a, 0, hi).astype(np.uint16)
+    a8 = cv2.normalize(a, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    # boost local contrast
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    return clahe.apply(a8)
+
+def _kv2_detect_dot(gray8: np.ndarray, bright_dot: bool = True, max_points=2):
+    """Detect up to two circular dots in KV2 IR using SimpleBlobDetector."""
+    if gray8 is None or gray8.ndim != 2:
+        return gray8, [[None, None]] * max_points
+
+    h, w = gray8.shape
+    area_scale = (w * h) / float(512 * 424)
+    min_area = int(20 * area_scale)
+    max_area = int(2200 * area_scale)
+
+    params = cv2.SimpleBlobDetector_Params()
+    params.filterByColor = True
+    params.blobColor = 255 if bright_dot else 0
+    p99 = int(np.percentile(gray8, 99))
+    params.minThreshold = max(170, p99 - 15)
+    params.maxThreshold = 255
+    params.thresholdStep = 5
+
+    params.filterByArea = True
+    params.minArea = max(8, min_area)
+    params.maxArea = max_area
+
+    params.filterByCircularity = True
+    params.minCircularity = 0.6
+    params.filterByInertia = True
+    params.minInertiaRatio = 0.2
+    params.filterByConvexity = True
+    params.minConvexity = 0.8
+
+    detector = cv2.SimpleBlobDetector_create(params)
+    kps = detector.detect(gray8)
+
+    disp = cv2.cvtColor(gray8, cv2.COLOR_GRAY2BGR)
+    if not kps:
+        return disp, [[None, None]] * max_points
+    # Sort by size, take up to max_points
+    kps = sorted(kps, key=lambda kp: kp.size, reverse=True)[:max_points]
+    points = []
+    for k in kps:
+        cx, cy = int(k.pt[0]), int(k.pt[1])
+        cv2.circle(disp, (cx, cy), 6, (0, 0, 255), 2)
+        points.append([float(cx), float(cy)])
+    # Pad if less than max_points
+    while len(points) < max_points:
+        points.append([None, None])
+    return disp, points
+
+def _azure_preprocess_ir_u16(ir_u16: np.ndarray) -> np.ndarray:
+    """Normalize Azure IR (uint16) to contrasty uint8."""
+    if ir_u16 is None:
+        return None
+    a = ir_u16.astype(np.uint16)
+    # clip extreme highs to suppress specular bloom
+    hi = np.percentile(a, 99.7)
+    a = np.clip(a, 0, hi).astype(np.uint16)
+    # normalize -> uint8
+    a8 = cv2.normalize(a, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    # denoise and boost local contrast
+    a8 = cv2.medianBlur(a8, 3)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    a8 = clahe.apply(a8)
+    return a8
+
+def _azure_detect_dot(gray8: np.ndarray, bright_dot: bool = True, max_points=2):
+    """Detect up to two bright circular dots in Azure IR using SimpleBlobDetector."""
+    if gray8 is None or gray8.ndim != 2:
+        return gray8, [[None, None]] * max_points
+
+    h, w = gray8.shape
+    area_scale = (w * h) / float(512 * 512)
+    min_area = int(18 * area_scale)
+    max_area = int(1800 * area_scale)
+
+    params = cv2.SimpleBlobDetector_Params()
+    params.filterByColor = True
+    params.blobColor = 255 if bright_dot else 0
+
+    p99 = int(np.percentile(gray8, 99))
+    params.minThreshold = max(160, p99 - 20)
+    params.maxThreshold = 255
+    params.thresholdStep = 5
+
+    params.filterByArea = True
+    params.minArea = max(5, min_area)
+    params.maxArea = max_area
+
+    params.filterByCircularity = True
+    params.minCircularity = 0.65
+    params.filterByInertia = True
+    params.minInertiaRatio = 0.2
+    params.filterByConvexity = True
+    params.minConvexity = 0.85
+
+    detector = cv2.SimpleBlobDetector_create(params)
+    kps = detector.detect(gray8)
+
+    disp = cv2.cvtColor(gray8, cv2.COLOR_GRAY2BGR)
+    if not kps:
+        return disp, [[None, None]] * max_points
+    # Sort by size, take up to max_points
+    kps = sorted(kps, key=lambda kp: kp.size, reverse=True)[:max_points]
+    points = []
+    for k in kps:
+        cx, cy = int(k.pt[0]), int(k.pt[1])
+        cv2.circle(disp, (cx, cy), 6, (0, 0, 255), 2)
+        points.append([float(cx), float(cy)])
+    while len(points) < max_points:
+        points.append([None, None])
+    return disp, points
+
+# Add helpers for single-camera fallback (ray-plane)
+def _extract_K_R_t(cp: dict):
+    """Best-effort extraction without using boolean 'or' on numpy arrays."""
+    if cp is None:
+        return None, None, None
+
+    def first(keys):
+        for k in keys:
+            if k in cp and cp[k] is not None:
+                return cp[k]
+        return None
+
+    # Intrinsics
+    K = first(["camera_matrix", "intrinsic_matrix", "K"])
+    if K is not None:
+        K = np.array(K, dtype=np.float64)
+
+    # Rotation/translation
+    Rv = first(["R", "rotation", "rotation_matrix"])
+    tv = first(["t", "translation", "T"])
+
+    # If missing, try 4x4 extrinsic matrix
+    Em = first(["extrinsic_matrix", "extrinsics", "Rt"])
+    if (Rv is None or tv is None) and Em is not None:
+        E = np.array(Em, dtype=np.float64)
+        if E.shape == (4, 4):
+            if Rv is None:
+                Rv = E[:3, :3]
+            if tv is None:
+                tv = E[:3, 3]
+
+    if Rv is not None:
+        Rv = np.array(Rv, dtype=np.float64)
+    if tv is not None:
+        tv = np.array(tv, dtype=np.float64).reshape(3)
+
+    return K, Rv, tv
+
+def _get_floor_plane(extrinsics: list):
+    """Find a plane {normal:[nx,ny,nz], d} in JSON; fallback to z=0."""
+    plane = None
+    for cp in extrinsics or []:
+        p = cp.get("floor_plane") or cp.get("ground_plane") or cp.get("plane")
+        if isinstance(p, dict) and "normal" in p and "d" in p:
+            plane = {"normal": np.array(p["normal"], dtype=np.float64).reshape(3),
+                     "d": float(p["d"])}
+            break
+    if plane is None:
+        plane = {"normal": np.array([0.0, 0.0, 1.0]), "d": 0.0}
+    return plane
+
+def _ray_from_pixel(K: np.ndarray, R: np.ndarray, t: np.ndarray, uv: np.ndarray):
+    """Return world-space ray (origin C, dir) from pixel uv. World->cam: Xc=R Xw + t."""
+    Kinv = np.linalg.inv(K)
+    ray_cam = Kinv @ np.array([float(uv[0]), float(uv[1]), 1.0])
+    ray_cam /= np.linalg.norm(ray_cam)
+    Rt = R.T
+    C = -Rt @ t
+    dir_w = Rt @ ray_cam
+    dir_w /= np.linalg.norm(dir_w)
+    return C, dir_w
+
+def _intersect_ray_plane(C: np.ndarray, dir_w: np.ndarray, plane: dict):
+    """Intersect with n·X + d = 0; return None if parallel/behind."""
+    n = plane["normal"]; d = plane["d"]
+    denom = float(n.dot(dir_w))
+    if abs(denom) < 1e-8:
+        return None
+    t = -(n.dot(C) + d) / denom
+    if t <= 0:
+        return None
+    X = C + t * dir_w
+    return X
 
 def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True):
     """Fuse detections from both cameras, triangulate and send best single 3D point.
@@ -233,6 +454,21 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
     """
     global camera_poses
     print("Fused tracking started (server mode)")
+    # --- WARMUP ---
+    print("Warming up cameras for 3 seconds...")
+    time.sleep(3)
+    print("Warmup complete. Starting tracking.")
+
+    # Prepare single-camera fallback using cam0 (Azure) if available
+    plane = _get_floor_plane(camera_poses or [])
+    K0 = R0 = t0 = None
+   
+    if _is_nonempty(camera_poses):
+        K0, R0, t0 = _extract_K_R_t(camera_poses[0])
+        if K0 is None or R0 is None or t0 is None:
+            print("[Fallback] Missing Azure K/R/t in extrinsics; single-camera fallback disabled.")
+        else:
+            print("[Fallback] Single-camera floor-plane fallback enabled.")
 
     server = None
     conn = None
@@ -258,6 +494,11 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
         server = None
         conn = None
 
+    # cache last valid per-camera detections
+    last_az_ts, last_az_pts = 0.0, None
+    last_kv2_ts, last_kv2_pts = 0.0, None
+    STALE_S = 1.0  # was 0.25; allow up to 1s skew between detections
+
     while running.is_set():
         try:
             # Accept client if needed
@@ -271,47 +512,83 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
                     time.sleep(0.1)
                     continue
 
-            # get newest detections
-            azure_pts = _drain_latest(out_queue_azure)
-            kv2_pts = _drain_latest(out_queue_kv2)
+            # pull newest items, update caches only when new data present
+            az_item = _drain_latest(out_queue_azure)
+            if az_item is not None:  # (ts, [[x,y]])
+                t, pts = az_item
+                last_az_ts, last_az_pts = t, pts
 
-            if azure_pts is None and kv2_pts is None:
-                time.sleep(0.005)
+            kv2_item = _drain_latest(out_queue_kv2)
+            if kv2_item is not None:
+                t, pts = kv2_item
+                last_kv2_ts, last_kv2_pts = t, pts
+
+            now = time.time()
+            have_az = last_az_pts is not None and (now - last_az_ts) <= STALE_S
+            have_kv2 = last_kv2_pts is not None and (now - last_kv2_ts) <= STALE_S
+           
+            if not (have_az and have_kv2):
+                # Single-camera fallback if Azure only
+                x = y = z = 0.0
+                if have_az and K0 is not None and R0 is not None and t0 is not None:
+                    try:
+                        uv = np.array(last_az_pts[0], dtype=np.float64)
+                        C, dir_w = _ray_from_pixel(K0, R0, t0, uv)
+                        Xw = _intersect_ray_plane(C, dir_w, plane)
+                        if Xw is not None and np.all(np.isfinite(Xw)):
+                            x, y, z = float(Xw[0]), float(Xw[1]), float(Xw[2])
+                            # optional debug
+                            # print(f"[Fallback] {x:.3f} {y:.3f} {z:.3f}")
+                    except Exception as e:
+                        print(f"[Fallback] Ray-plane failed: {e}")
+                else:
+                    # detailed diagnostics
+                    age_az = (now - last_az_ts) if last_az_ts else None
+                    age_kv2 = (now - last_kv2_ts) if last_kv2_ts else None
+
+                    if age_az is None:
+                        print("[Fuse] No Azure detection yet.")
+                    elif age_az > STALE_S:
+                        print(f"[Fuse] Azure detection stale: {age_az:.3f}s")
+                    if age_kv2 is None:
+                        print("[Fuse] No Kinect v2 detection yet.")
+                    elif age_kv2 > STALE_S:
+                        print(f"[Fuse] Kinect v2 detection stale: {age_kv2:.3f}s")
+                if stream and conn:
+                    try:
+                        print(f"Sending fallback point: {x} {y} {z}")
+                        conn.sendall(f"{x} {y} {z}\n".encode("utf-8"))
+                    except Exception:
+                        pass
+                time.sleep(0.01)
                 continue
 
-            image_points = []
-            image_points.append(azure_pts if azure_pts is not None else [])
-            image_points.append(kv2_pts if kv2_pts is not None else [])
-        
-            # triangulate / find correspondences
-            object_points, image_p = find_point_correspondance_and_object_points(image_points, camera_poses, 1)
-          
-            best3d = None
-            if _is_nonempty(object_points):
-                best3d = _select_best_3d_point(object_points, cluster_threshold=0.06)
+            # build image points for triangulation (two dots)
+            image_points = [last_az_pts, last_kv2_pts]
+            
+            try:
+                image_points, _ = find_point_correspondance_and_object_points(
+                    [last_az_pts, last_kv2_pts], camera_poses, 2
+                )
+                print("DEBUG: image_points after correspondance:", image_points)
+            except Exception as e:
+                print(f"[Fuse] Triangulation call failed: {e}")
+                image_points = []
 
+            best3d = None
+           
+            if _is_nonempty(image_points):
+                best3d = _select_best_3d_point(image_points, cluster_threshold=0.06)
+    
             if best3d is not None and np.all(np.isfinite(best3d)):
                 x, y, z = float(best3d[0]), float(best3d[1]), float(best3d[2])
-                print(f"Fused point: {x:.3f} {y:.3f} {z:.3f}")
             else:
                 x, y, z = 0.0, 0.0, 0.0
 
-            x_vals = [0.0, 5.0, 10.0, 15.0, 20.0]
-            y_vals = [0.0, 5.0, 10.0, 15.0, 20.0]
-            z_vals = [0.0, 5.0, 10.0, 15.0, 20.0]
             if stream and conn:
                 try:
-                    x_random = random.choice(x_vals)
-                    y_random = random.choice(y_vals)
-                    z_random = random.choice(z_vals)
-                    # plain UTF-8 line: "x y z\n"
-                    #time.sleep(1)  # simulate processing 
-                   
-                    time.sleep(0.1)  # simulate ~60Hz
-                    line = f"{x} {y} {z}\n".encode("utf-8")
-                    conn.sendall(line)
-                except (BrokenPipeError, ConnectionResetError, OSError) as e:
-                    print("Unity disconnected or send failed:", repr(e))
+                    conn.sendall(f"{x} {y} {z}\n".encode("utf-8"))
+                except (BrokenPipeError, ConnectionResetError, OSError):
                     try:
                         conn.close()
                     except Exception:
@@ -321,14 +598,11 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
             else:
                 print(f"Fused point: {x} {y} {z}")
 
-            # small sleep to limit CPU
             time.sleep(0.005)
-
         except Exception as e:
-            print(f"Tracking error: {e}")
+            print(f"Fused tracking error: {e}")
             time.sleep(0.01)
             continue
-
     # cleanup
     if stream:
         try:

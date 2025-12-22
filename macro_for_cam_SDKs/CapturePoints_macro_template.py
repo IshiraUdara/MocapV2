@@ -66,6 +66,24 @@ def read_images(path,preview=False,debug=False):
 
 
 
+def _hstack_preview(imgs, target_height=600):
+    """Resize each image to the same height, preserve aspect ratio, and stack side-by-side."""
+    fixed = []
+    for im in imgs:
+        if im is None:
+            continue
+        # Convert to BGR if grayscale
+        imc = cv.cvtColor(im, cv.COLOR_GRAY2BGR) if im.ndim == 2 else im
+        # Preserve aspect ratio
+        scale = target_height / imc.shape[0]
+        new_width = int(imc.shape[1] * scale)
+        imr = cv.resize(imc, (new_width, target_height), interpolation=cv.INTER_AREA)
+        fixed.append(imr)
+    if not fixed:
+        return None
+    # Stack horizontally
+    return cv.hconcat(fixed)
+
 def capture_pose_points(images,preview=False,debug=False):
     '''output: saves points to points_json
     prerequisites needed: images shape: (camera_count, image_count, height, width, channels)
@@ -157,16 +175,17 @@ def capture_pose_points(images,preview=False,debug=False):
                 image_point = image_point[0]
         if not skip:
             if preview:
-                image = cv.resize(image, (int(image.shape[1] * 0.25), int(image.shape[0] * 0.25)))
-                image = np.hstack([processed_images[0], processed_images[1]])
-                cv.imshow("Preview", image)
+                # Replace the previous ad-hoc resize/hstack
+                panel = _hstack_preview(processed_images, target_height=600)
+                if panel is not None:
+                    cv.imshow("Preview", panel)
                 key = cv.waitKey(0) & 0xFF
                 if key == ord(' '):
                     print("Saving points...")
                     image_points.append(calculated_points.tolist())
-                if key == ord('x'):
+                elif key == ord('x'):
                     print("Skipping points...")
-                if key == ord('q'):
+                elif key == ord('q'):
                     print("Exiting...")
                     cv.destroyAllWindows()
                     quit()
@@ -228,17 +247,9 @@ def capture_floor_points(preview=False,debug=False,images=None,camera_count=2):
     
     cv.namedWindow(f'Preview', cv.WINDOW_NORMAL)
     if preview:
-        if len(processed_images) >= 2:
-            # Resize images if they're different sizes
-            h1, w1 = processed_images[0].shape[:2]
-            h2, w2 = processed_images[1].shape[:2]
-            if h1 != h2 or w1 != w2:
-                # Resize second image to match first
-                processed_images[1] = cv.resize(processed_images[1], (w1, h1))
-            image = np.vstack([processed_images[0], processed_images[1]])
-        else:
-            image = processed_images[0]
-        cv.imshow("Preview", image)
+        panel = _hstack_preview(processed_images, target_height=600)
+        if panel is not None:
+            cv.imshow ("Preview", panel)
         key = cv.waitKey(0) & 0xFF
         if key == ord(' '):
             print("Getting points...")

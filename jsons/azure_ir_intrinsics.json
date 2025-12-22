@@ -1,0 +1,38 @@
+{
+  "camera_name": "AzureKinectDK_IR",
+  "image_size": {
+    "width": 1920,
+    "height": 1080
+  },
+  "checkerboard": {
+    "cols": 9,
+    "rows": 6,
+    "square_size": 0.025
+  },
+  "camera_matrix": [
+    [
+      1075.221505569987,
+      0.0,
+      1036.157247677244
+    ],
+    [
+      0.0,
+      1498.9679837332883,
+      513.3662151946063
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "distortion_coefficients": [
+    -0.5547369544258801,
+    8.651017713616612,
+    0.05629849793690181,
+    0.02534577515803468,
+    -37.73619022570887
+  ],
+  "reprojection_error_rmse": 0.6617298681971997,
+  "model": "pinhole+radial-tangential"
+}

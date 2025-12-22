@@ -15,7 +15,8 @@ import pykinect_azure as pykinect
 from pykinect_azure.k4a import Image, _k4a
 
 from lib.Helpers import find_point_correspondance_and_object_points, get_extrinsics
-from lib.ImageOperations import _find_dot
+# from lib.ImageOperations import _find_dot  # avoid broken global undistort; use local detector instead
+from CalculateCameraPoses_template import INTRINSICS as CALC_INTRINSICS
 
 # Optional Kinect v2 (Kinect for Xbox One) support
 try:
@@ -33,7 +34,6 @@ def _is_nonempty(x):
     """
     if x is None:
         return False
-    # NumPy arrays have .size
     if hasattr(x, "size"):
         try:
             return int(x.size) > 0
@@ -42,7 +42,6 @@ def _is_nonempty(x):
     try:
         return len(x) > 0
     except Exception:
-        # fallback: assume non-None object is non-empty
         return True
 
 camera_poses, camera_count = get_extrinsics("./jsons/after_floor_extrinsics.json")
@@ -50,7 +49,6 @@ camera_poses, camera_count = get_extrinsics("./jsons/after_floor_extrinsics.json
 # Lightweight queues to pass detections (keep only latest)
 data_queue_azure = queue.Queue(maxsize=4)
 data_queue_kv2 = queue.Queue(maxsize=4)
-
 
 def _drain_latest(q):
     """Return the newest item from queue or None if empty."""
@@ -61,14 +59,103 @@ def _drain_latest(q):
     except queue.Empty:
         return item
 
+# ---- Intrinsics helpers (reuse CalculateCameraPoses intrinsics) ----
+
+def _scale_K_to_size(K, src_size_wh, dst_w, dst_h):
+    """Scale intrinsic matrix K from src_size to destination size (w,h)."""
+    src_w, src_h = src_size_wh
+    if src_w <= 0 or src_h <= 0:
+        return K.copy()
+    sx = float(dst_w) / float(src_w)
+    sy = float(dst_h) / float(src_h)
+    Ks = K.copy().astype(np.float32)
+    Ks[0, 0] *= sx
+    Ks[0, 2] *= sx
+    Ks[1, 1] *= sy
+    Ks[1, 2] *= sy
+    return Ks
+
+def _undistort_gray(gray, intr):
+    """Undistort a single-channel image using provided intrinsics dict."""
+    if gray is None:
+        return None
+    h, w = gray.shape[:2]
+    src_w, src_h = intr['size']
+    K_scaled = _scale_K_to_size(intr['K'], (src_w, src_h), w, h)
+    dist = intr['dist'].astype(np.float32).reshape(-1)
+    # Use direct undistort; gray stays uint8
+    try:
+        und = cv2.undistort(gray, K_scaled, dist, None, K_scaled)
+    except Exception:
+        und = gray
+    return und
+
+# ---- Local safe dot detector (avoids lib.ImageOperations dependency) ----
+
+def _ensure_uint8_gray(img):
+    """Ensure a 2D uint8 grayscale numpy array."""
+    if img is None:
+        return None
+    a = np.asarray(img)
+    # unwrap object arrays
+    if isinstance(a, np.ndarray) and a.dtype == object:
+        try:
+            a = np.array(a.tolist())
+        except Exception:
+            a = a.astype(np.uint8, copy=False)
+    if a.ndim == 3:
+        a = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
+    if a.dtype == np.uint16:
+        a = (a >> 8).astype(np.uint8)
+    elif a.dtype != np.uint8:
+        a = cv2.normalize(a, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    return a
+
+def _local_find_dot(gray, print_location=False):
+    """Return (display_image, [[x, y]]) or ([[None, None]]) if not found."""
+    gray = _ensure_uint8_gray(gray)
+    if gray is None or gray.ndim != 2:
+        return gray, [[None, None]]
+
+    # denoise and threshold
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # invert if mostly white
+    if np.mean(th) > 200:
+        th = cv2.bitwise_not(th)
+
+    # find largest contour
+    contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return gray, [[None, None]]
+
+    cnt = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(cnt) < 5:
+        return gray, [[None, None]]
+    M = cv2.moments(cnt)
+    if M['m00'] == 0:
+        return gray, [[None, None]]
+    cx = int(M['m10'] / M['m00'])
+    cy = int(M['m01'] / M['m00'])
+
+    disp = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    cv2.circle(disp, (cx, cy), 6, (0, 0, 255), 2)
+    if print_location:
+        print(f"Detected dot at: ({cx}, {cy})")
+    return disp, [[float(cx), float(cy)]]
+
+# ---- Tracking loops (now undistort using CalculateCameraPoses intrinsics) ----
 
 def track_points_azure(kinect, out_queue: queue.Queue, preview=False):
-    """Acquire IR from Azure Kinect DK, detect dots and push detections (list of [x,y])."""
+    """Acquire IR from Azure Kinect DK, undistort using INTRINSICS[0], detect dots and push detections."""
     try:
         serial = kinect.get_serialnum()
         win = f'Azure IR - {serial}'
         if preview:
             cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+
+        # intrinsics for Azure (index 0 by convention)
+        intr_az = CALC_INTRINSICS[0]
 
         time.sleep(1.0)
         while running.is_set():
@@ -94,12 +181,14 @@ def track_points_azure(kinect, out_queue: queue.Queue, preview=False):
                     if ir_image is None:
                         continue
 
-                    gray = (ir_image >> 8).astype(np.uint8) if ir_image.dtype == np.uint16 else ir_image.astype(np.uint8)
-
+                    gray = _ensure_uint8_gray(ir_image)
                 finally:
                     _k4a.k4a_image_release(ir_handle)
 
-                processed, detected = _find_dot(gray, print_location=False)
+                # undistort with scaled intrinsics
+                gray_u = _undistort_gray(gray, intr_az)
+
+                processed, detected = _local_find_dot(gray_u, print_location=False)
                 # push latest
                 try:
                     if out_queue.full():
@@ -130,7 +219,7 @@ def track_points_azure(kinect, out_queue: queue.Queue, preview=False):
 
 
 def track_points_kinect_v2(kinect_runtime, out_queue: queue.Queue, preview=False):
-    """Acquire IR from Kinect v2 runtime, detect dots and push detections."""
+    """Acquire IR from Kinect v2 runtime, undistort using INTRINSICS[1], detect dots and push detections."""
     if PyKinectRuntime is None or PyKinectV2 is None:
         print("PyKinect2 not available; Kinect v2 disabled.")
         return False
@@ -139,6 +228,9 @@ def track_points_kinect_v2(kinect_runtime, out_queue: queue.Queue, preview=False
         win = 'Kinect v2 IR'
         if preview:
             cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+
+        # intrinsics for Kinect v2 (index 1 by convention)
+        intr_kv2 = CALC_INTRINSICS[1]
 
         # try to read frame descriptor
         try:
@@ -160,9 +252,12 @@ def track_points_kinect_v2(kinect_runtime, out_queue: queue.Queue, preview=False
                 except Exception:
                     ir_image = ir_frame.reshape((h, w)).astype(np.uint16)
 
-                gray = (ir_image >> 8).astype(np.uint8)
+                gray = _ensure_uint8_gray(ir_image)
 
-                processed, detected = _find_dot(gray, print_location=False)
+                # undistort with scaled intrinsics
+                gray_u = _undistort_gray(gray, intr_kv2)
+
+                processed, detected = _local_find_dot(gray_u, print_location=False)
                 try:
                     if out_queue.full():
                         out_queue.get_nowait()
@@ -193,7 +288,6 @@ def track_points_kinect_v2(kinect_runtime, out_queue: queue.Queue, preview=False
 
 def _select_best_3d_point(points3d, cluster_threshold=0.06):
     """Cluster candidate 3D points and return centroid of largest cluster."""
-    # use safe emptiness check to avoid "truth value of an array is ambiguous"
     if not _is_nonempty(points3d):
         return None
     pts = np.array(points3d, dtype=np.float32)
@@ -251,7 +345,6 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
             server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
-            # try bind, fallback to nearby ports or ephemeral if permission/port-in-use errors occur
             bound = False
             tried_ports = []
             for attempt in [PORT] + list(range(PORT + 1, PORT + 6)):
@@ -317,7 +410,6 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
             data = {"tracker1": best_point}
             if stream:
                 try:
-                    # frame with newline so clients can split messages
                     packed = msgpack.packb(data, use_bin_type=True) + b"\n"
                     conn.sendall(packed)
                 except (BrokenPipeError, ConnectionResetError, OSError) as e:
@@ -327,9 +419,7 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
                     except Exception:
                         pass
 
-                    # Reconnect strategy depends on how we originally connected
                     if client_mode:
-                        # try to reconnect as client
                         reconnected = False
                         while running.is_set() and not reconnected:
                             try:
@@ -340,10 +430,8 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
                             except Exception:
                                 time.sleep(0.5)
                         if not reconnected:
-                            # exit or continue loop waiting for running cleared
                             continue
                     else:
-                        # server mode: accept a new incoming connection
                         print("Waiting for Unity to reconnect (server mode)...")
                         while running.is_set():
                             try:
@@ -357,7 +445,6 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
             else:
                 print("Fused:", best_point)
 
-            # small sleep to limit CPU
             time.sleep(0.005)
 
         except Exception as e:
@@ -425,14 +512,12 @@ def main():
         else:
             print("PyKinect2 not available; Kinect v2 thread not started.")
 
-        # main loop waits for interrupt
         try:
             while running.is_set():
                 time.sleep(0.1)
         except KeyboardInterrupt:
             running.clear()
 
-        # join threads
         t_azure.join(timeout=2)
         if t_kv2:
             t_kv2.join(timeout=2)
