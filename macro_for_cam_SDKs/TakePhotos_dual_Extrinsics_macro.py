@@ -5,7 +5,10 @@ import cv2
 import pykinect_azure as pykinect
 from pykinect_azure.k4a import *
 from pykinect_azure.k4a import _k4a
-import PySpin
+try:
+    import PySpin
+except ImportError:
+    PySpin = None
 import os
 import mmap
 import numpy as np

@@ -10,7 +10,7 @@ import sys
 # List your cameras (must match Unity mmfName and RT size)
 cameras = [
     {"name": "UnityCam1", "width": 256, "height": 256, "channels": 4},
-    {"name": "UnityCam2", "width": 256, "height": 256, "channels": 4},
+    # {"name": "UnityCam2", "width": 256, "height": 256, "channels": 4},
 ]
 
 OUT_DIR = "Unity_Simulation/texture_import_from_unity"

@@ -24,6 +24,8 @@ except Exception:
     PyKinectRuntime = None
     PyKinectV2 = None
 
+import EZVIZ_camera_feedToMMAP as main_camera
+
 running = threading.Event()
 running.set()
 
@@ -583,7 +585,7 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
             if best3d is not None and np.all(np.isfinite(best3d)):
                 x, y, z = float(best3d[0]), float(best3d[1]), float(best3d[2])
             else:
-                x, y, z = 0.0, 0.0, 0.0
+                x, y, z = 0.0, 0.9, 0.0
 
             if stream and conn:
                 try:
@@ -623,6 +625,10 @@ def main():
         
         # initialize Azure library
         pykinect.initialize_libraries(track_body=False)
+
+        #Unity camera feed thread
+        main_camera_thread = threading.Thread(target=main_camera.main, daemon=True)
+        main_camera_thread.start()
 
         # processing thread
         proc = threading.Thread(target=track, args=(data_queue_azure, data_queue_kv2, True))
