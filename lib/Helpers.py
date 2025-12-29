@@ -5,6 +5,7 @@ import cv2 as cv
 from scipy.spatial.transform import Rotation
 import copy
 import copy
+from scipy.optimize import least_squares
 
 camera_params = None
 camera_params_path = "./jsons/camera-params-in.json"
@@ -170,8 +171,18 @@ def bundle_adjustment(image_points, camera_poses):
     for i, camera_pose in enumerate(camera_poses[1:]):
         init_params = np.concatenate([init_params, Rotation.from_matrix(camera_pose["R"]).as_rotvec(), camera_pose["t"].flatten()])
     
-    result = optimize.least_squares(residual_function, init_params, verbose=2,loss="linear", method='trf', ftol=1E-5, xtol=1E-15)
-    camera_poses = params_to_camera_poses(result.x)
+    res = least_squares(
+        residual_function,
+        init_params,
+        method='trf',
+        loss='soft_l1',     # robust to outliers
+        f_scale=10.0,       # tune with pixel noise level
+        max_nfev=200,       # reduce from ~600 to 200
+        ftol=1e-4, gtol=1e-4, xtol=1e-4,  # relaxed tolerances
+        x_scale='jac',
+        verbose=2
+    )
+    camera_poses = params_to_camera_poses(res.x)
     
     return camera_poses
 

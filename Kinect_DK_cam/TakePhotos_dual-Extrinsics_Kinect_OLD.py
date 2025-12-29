@@ -6,6 +6,7 @@ import os
 import numpy as np
 import ctypes
 import types
+import json
 
 # PyKinect v2 (Kinect for Xbox One / SDK v2.0_1409)
 from pykinect2 import PyKinectRuntime, PyKinectV2
@@ -54,6 +55,45 @@ take_photo.clear()
 
 latest_kv2_color = {"frame": None, "size": (0, 0)}
 latest_azure_color = {"frame": None}
+
+# Load intrinsics once (adjust path if your JSON lives elsewhere)
+INTRINSICS_PATH = os.path.join(os.path.dirname(__file__), '..', 'macro_for_cam_SDKs', 'jsons', 'camera-params-in.json')
+try:
+    with open(INTRINSICS_PATH, 'r') as f:
+        CAPARAMS = json.load(f)
+except Exception:
+    CAPARAMS = None
+
+def _get_cam_intrinsics(cam_idx):
+    if CAPARAMS is None:
+        return None
+    try:
+        key = f"cam{cam_idx}"
+        cam = CAPARAMS.get(key)
+        if cam is None and isinstance(CAPARAMS, list) and cam_idx < len(CAPARAMS):
+            cam = CAPARAMS[cam_idx]
+        if cam is None:
+            return None
+        K = np.array(cam.get("K") or cam.get("camera_matrix") or cam.get("intrinsics"))
+        dist = np.array(cam.get("distCoeffs") or cam.get("distortion_coefficients") or cam.get("dist"))
+        if K.size and dist.size:
+            return K.astype(np.float32), dist.astype(np.float32)
+    except Exception:
+        pass
+    return None
+
+def _undistort_color(disp_bgr, cam_idx):
+    intr = _get_cam_intrinsics(cam_idx)
+    if intr is None:
+        return disp_bgr
+    K, dist = intr
+    h, w = disp_bgr.shape[:2]
+    newK, roi = cv2.getOptimalNewCameraMatrix(K, dist, (w, h), alpha=1.0)
+    und = cv2.undistort(disp_bgr, K, dist, None, newK)
+    x, y, ww, hh = roi
+    if ww > 0 and hh > 0:
+        und = und[y:y+hh, x:x+ww]
+    return und
 
 def acquire_and_display_color_kv2(kinect: PyKinectRuntime.PyKinectRuntime, cam_num, flipped=True, floor=False):
     global running, take_photo, latest_kv2_color
@@ -159,6 +199,7 @@ def acquire_and_display_color_kv2(kinect: PyKinectRuntime.PyKinectRuntime, cam_n
                 if flipped:
                     disp = cv2.flip(disp, 1)
 
+                disp = _undistort_color(disp, cam_num)
                 latest_kv2_color["frame"] = disp
                 latest_kv2_color["size"] = (width, height)
 
@@ -185,7 +226,7 @@ def acquire_and_display_color_kv2(kinect: PyKinectRuntime.PyKinectRuntime, cam_n
                     out_dir = f'Kinect_DK_cam/captured_images/cam{cam_num}'
                     os.makedirs(out_dir, exist_ok=True)
                     out_path = os.path.join(out_dir, f'{ts}_color_kv2.png')
-                    cv2.imwrite(out_path, disp)
+                    cv2.imwrite(out_path, disp)  # undistorted
                     print("Saved:", out_path)
                     take_photo.clear()
 
@@ -265,6 +306,7 @@ def acquire_and_display_color_azure(device, cam_num, flipped=True):
                 if flipped:
                     disp = cv2.flip(disp, 1)
 
+                disp = _undistort_color(disp, cam_num)
                 latest_azure_color["frame"] = disp
                 cv2.imshow(window_name, disp)
 
@@ -280,7 +322,7 @@ def acquire_and_display_color_azure(device, cam_num, flipped=True):
                     out_dir = f'Kinect_DK_cam/captured_images/cam0'
                     os.makedirs(out_dir, exist_ok=True)
                     out_path = os.path.join(out_dir, f'{ts}_color_azure.png')
-                    cv2.imwrite(out_path, disp)
+                    cv2.imwrite(out_path, disp)  # undistorted
                     print("Saved:", out_path)
                     take_photo.clear()
 

@@ -589,6 +589,7 @@ def track(out_queue_azure: queue.Queue, out_queue_kv2: queue.Queue, stream=True)
 
             if stream and conn:
                 try:
+                    # print(f"Sending fused point: {x} {y} {z}")
                     conn.sendall(f"{x} {y} {z}\n".encode("utf-8"))
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     try:
